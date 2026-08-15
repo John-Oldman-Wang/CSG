@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import time
 from collections.abc import Iterable, Sequence
 
 import pandas as pd
@@ -185,6 +186,7 @@ class Ingestor:
         today = dt.date.today()
 
         for i, code in enumerate(codes, 1):
+            t0 = time.monotonic()
             for stmt in statements:
                 table = aks.target_table(stmt)
                 dataset = f"{table}"
@@ -215,8 +217,16 @@ class Ingestor:
                     stats["failed"] += 1
                     log.warning("[%d/%d] %s %s 失败: %s", i, len(codes), code, stmt, exc)
 
-            if i % 10 == 0:
-                log.info("财务进度 %d/%d %s", i, len(codes), stats)
+            # 逐只记录耗时：接口响应时间波动极大（实测 6-60 秒/表），
+            # 只报进度不报速度时无法区分「慢」与「卡住」。
+            # 阈值 1 秒用于滤掉水位命中的跳过项——它们不发请求，
+            # 记录只会淹没真正的采集条目。
+            elapsed = time.monotonic() - t0
+            if elapsed >= 1.0:
+                log.info("[%d/%d] %s 用时 %.0fs %s", i, len(codes), code,
+                         elapsed, stats)
+            elif i % 50 == 0:
+                log.info("[%d/%d] 跳过至此（水位命中）", i, len(codes))
 
         return stats
 

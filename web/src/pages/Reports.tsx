@@ -7,8 +7,8 @@ import {
   type ValueFormatterParams,
 } from "ag-grid-community";
 import { AgGridReact } from "ag-grid-react";
-import { useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { api, DataLockedError } from "@/api/client";
 import { Badge, Button, Card, CardTitle, DataLocked } from "@/components/ui/primitives";
 import type { RatingChange, ReportFilters, ReportRow } from "@/types";
@@ -42,9 +42,26 @@ const CHANGE_META: Record<RatingChange, { label: string; cls: string }> = {
 const PAGE_SIZE = 50;
 
 export default function Reports() {
-  const [form, setForm] = useState<ReportFilters>({});
-  const [applied, setApplied] = useState<ReportFilters>({});
-  const [page, setPage] = useState(1);
+  // URL 是筛选状态的唯一真相源：链接可分享、刷新不丢、浏览器前进后退可用。
+  // form 只是用户正在输入的临时态，点「查询」后才写回 URL。
+  const [searchParams, setSearchParams] = useSearchParams();
+  const applied = useMemo(() => parseFilters(searchParams), [searchParams]);
+  const page = Math.max(1, Number(searchParams.get("page") ?? 1));
+  const [form, setForm] = useState<ReportFilters>(() => parseFilters(searchParams));
+
+  // 浏览器前进/后退时同步表单，否则输入框会与 URL 脱节
+  useEffect(() => {
+    setForm(parseFilters(searchParams));
+  }, [searchParams]);
+
+  function commit(next: ReportFilters, nextPage: number) {
+    const params = new URLSearchParams();
+    for (const [k, v] of Object.entries(next)) {
+      if (v !== undefined && v !== null && v !== "") params.set(k, String(v));
+    }
+    if (nextPage > 1) params.set("page", String(nextPage));
+    setSearchParams(params);
+  }
 
   const institutions = useQuery({
     queryKey: ["institutions"],
@@ -149,14 +166,12 @@ export default function Reports() {
   }
 
   function search() {
-    setPage(1);
-    setApplied(form);
+    commit(form, 1);
   }
 
   function reset() {
     setForm({});
-    setApplied({});
-    setPage(1);
+    setSearchParams(new URLSearchParams());
   }
 
   if (query.error instanceof DataLockedError) {
@@ -310,7 +325,7 @@ export default function Reports() {
       <div className="flex items-center justify-center gap-3">
         <Button
           variant="ghost"
-          onClick={() => setPage((p) => Math.max(1, p - 1))}
+          onClick={() => commit(applied, Math.max(1, page - 1))}
           disabled={page <= 1}
         >
           上一页
@@ -320,7 +335,7 @@ export default function Reports() {
         </span>
         <Button
           variant="ghost"
-          onClick={() => setPage((p) => Math.min(maxPage, p + 1))}
+          onClick={() => commit(applied, Math.min(maxPage, page + 1))}
           disabled={page >= maxPage}
         >
           下一页
@@ -329,6 +344,28 @@ export default function Reports() {
       </div>
     </div>
   );
+}
+
+/** URL query → 筛选条件。只认白名单字段，避免把任意参数透传给后端。 */
+const FILTER_KEYS = [
+  "start",
+  "end",
+  "title",
+  "institution",
+  "code",
+  "stock",
+  "industry",
+  "rating",
+  "rating_change",
+] as const;
+
+function parseFilters(params: URLSearchParams): ReportFilters {
+  const out: ReportFilters = {};
+  for (const k of FILTER_KEYS) {
+    const v = params.get(k);
+    if (v) (out as Record<string, string>)[k] = v;
+  }
+  return out;
 }
 
 const inputCls =
