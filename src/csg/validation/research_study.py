@@ -473,8 +473,11 @@ def institution_rank_stability(
     if len(merged) < 5:
         return {"共同机构数": len(merged), "结论": "共同机构过少，无法检验"}
 
-    rho = merged[f"{metric}_发现期"].corr(
-        merged[f"{metric}_验证期"], method="spearman")
+    # Spearman 秩相关 = 排名的 Pearson 相关。
+    # 手工实现而非 method="spearman"：后者依赖 scipy，
+    # 为一个函数引入数十 MB 依赖不划算。
+    rho = (merged[f"{metric}_发现期"].rank()
+           .corr(merged[f"{metric}_验证期"].rank()))
 
     # 发现期前 1/3 的机构，在验证期是否仍处于前 1/3
     n_top = max(1, len(merged) // 3)

@@ -112,9 +112,16 @@ class Detector:
                 "code": r["code"],
                 "ref_date": ref_date,
                 "ref_key": r["institution"],
-                # 下调进 P1（需当日处理），上调进 P2（周报即可）——
-                # 上调没有逆激励属性，信息量低
-                "severity": "P1" if downgrade else "P2",
+                # 一律 P2（仅记录，不打扰）。
+                #
+                # 原设计给下调 P1，依据是「逆激励机制」的先验推理。
+                # 该假设已被验证④ 证伪（run_id 见 validation_conclusion）：
+                #     发现期 下调超额60日 +1.62%，验证期 −3.00%，符号完全反转
+                # 两期反向是噪音的典型特征。继续按 P1 推送等于往飞书发噪音。
+                #
+                # 事件仍然记录：一是留作样本积累，二是它作为**上下文**
+                # 附在其他任务里仍有参考价值——只是不再单独构成打扰你的理由。
+                "severity": "P2",
                 "title": f"{r['institution']} 将评级由 {r['prev_rating']} "
                          f"{'下调' if downgrade else '上调'}至 {r['rating']}",
                 "payload": json.dumps({

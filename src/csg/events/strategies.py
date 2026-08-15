@@ -221,12 +221,17 @@ class StrategyEngine:
     # ------------------------------------------------------------------
 
     _HANDLERS: ClassVar[dict[str, str]] = {
-        "research_downgrade": "on_research_downgrade",
         "report_disclosed": "on_report_disclosed",
         "excess_drawdown": "on_excess_drawdown",
-        # research_upgrade / coverage_surge 刻意不生成任务：
-        # 上调无逆激励属性，密度激增可能是反向指标，
-        # 二者在验证④ 出结论前只记录事件、不打扰人。
+        # research_downgrade 已移除 —— 验证④ 证伪了「下调有信息量」的先验：
+        #     发现期 下调超额60日 +1.62%、250日 +8.09%
+        #     验证期 下调超额60日 −3.00%、250日 −10.72%
+        # 符号在两期完全反转，属噪音。若仅看发现期就接入决策链路，
+        # 等于连续数年向用户推送噪音——样本内外分割在此处兑现了价值。
+        #
+        # research_upgrade / coverage_surge 同样不生成任务：
+        # 前者验证期虽为正但发现期为负，同样不可复现；
+        # 后者各期无稳定规律。三者均仅记录事件供样本积累。
     }
 
     def process_pending_events(self, *, limit: int = 200) -> list[Task]:
