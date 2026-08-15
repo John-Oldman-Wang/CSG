@@ -205,6 +205,113 @@ def sql(query: Annotated[str, typer.Argument(help="SQL 语句")]) -> None:
         _show(db.query(query), "查询结果")
 
 
+# ----------------------------------------------------------------------
+# 验证
+# ----------------------------------------------------------------------
+
+validate_app = typer.Typer(help="方法论验证（需先完成数据采集）", no_args_is_help=True)
+app.add_typer(validate_app, name="validate")
+
+
+@validate_app.command("flags")
+def validate_flags(
+    start: str = "2018-01-01",
+    lookback: Annotated[int, typer.Option(help="事件前回溯季度数")] = 8,
+    min_score: Annotated[int, typer.Option(help="判定预警的分值门槛")] = 3,
+) -> None:
+    """验证① 红旗规则能否提前发现暴雷。
+
+    三个验证里结论最可信的一个：事件客观、严格 PIT、产出直接可用于
+    校准 config/exclusion.yaml 的阈值。
+    """
+    from csg.validation import flag_backtest
+
+    with open_db(DB_PATH) as db:
+        events = flag_backtest.find_blowup_events(
+            db, start=dt.date.fromisoformat(start))
+        console.print(f"识别暴雷事件 [bold]{len(events)}[/bold] 起")
+        if events.empty:
+            raise typer.Exit()
+
+        _show(events.groupby("event_type").size().reset_index(name="起数"), "事件类型分布")
+
+        console.print("[dim]逐事件回溯评估中，耗时较长…[/dim]")
+        warned = flag_backtest.backtest_early_warning(
+            db, events, lookback_quarters=lookback)
+
+        summary = flag_backtest.summarize(warned, min_score=min_score)
+        for k, v in summary.items():
+            console.print(f"  [cyan]{k}[/cyan]: {v}")
+
+        console.print(
+            "\n[yellow]注意：覆盖率必须与误报率同看。"
+            "把所有股票都标红，覆盖率必然 100%。[/yellow]")
+
+
+@validate_app.command("cycle")
+def validate_cycle(
+    theme: Annotated[str, typer.Option(help="主题：new_energy / ai_compute")] = "new_energy",
+) -> None:
+    """验证② 行业周期规律。
+
+    核心问题：用 PE 分位筛选周期行业，是否会系统性在高点买入。
+    """
+    from csg.validation import cycle_study
+
+    with open_db(DB_PATH) as db:
+        industries = universe.target_industries().get(theme, [])
+        if not industries:
+            console.print(f"[red]未知主题 {theme}[/red]")
+            raise typer.Exit(1)
+
+        agg = cycle_study.industry_aggregate(db, industries)
+        if agg.empty:
+            console.print("[yellow]无数据，请先 sync financials[/yellow]")
+            raise typer.Exit()
+
+        ind = cycle_study.cycle_indicators(agg)
+        cols = ["industry_name", "report_period", "companies", "gross_margin",
+                "net_margin", "capex_intensity", "inventory_ratio", "revenue_yoy"]
+        _show(ind[[c for c in cols if c in ind.columns]].round(3),
+              f"{theme} 行业周期指标（年度）", max_rows=40)
+
+
+@validate_app.command("screen")
+def validate_screen(
+    start: str = "2018-01-01",
+    end: str = "2025-12-31",
+    top_n: int = 20,
+    rebalance: Annotated[int, typer.Option(help="调仓间隔月数")] = 6,
+) -> None:
+    """验证③ 筛选条件历史表现。
+
+    ⚠️ 本命令验证的是**机械筛选层**，不是方法论。
+    方法论中人的判断部分（护城河、证伪条件、复核结论）无法回测。
+    """
+    from csg.validation import screen_backtest as sb
+
+    console.print("[yellow]⚠️ 本回测仅验证机械筛选层。"
+                  "漂亮的收益率不构成对方法论的验证。[/yellow]\n")
+
+    rule = sb.ScreenRule(
+        conditions=[("roe_ttm", ">", 0.12), ("cfo_to_ni", ">", 0.6),
+                    ("debt_ratio", "<", 0.65)],
+        top_n=top_n,
+    )
+    cfg = sb.BacktestConfig(
+        start=dt.date.fromisoformat(start),
+        end=dt.date.fromisoformat(end),
+        rebalance_months=rebalance,
+    )
+
+    with open_db(DB_PATH) as db:
+        detail, summary = sb.run_backtest(db, rule, cfg)
+        if not detail.empty:
+            _show(detail.drop(columns=["codes"]), "分期表现")
+        for k, v in summary.items():
+            console.print(f"  [cyan]{k}[/cyan]: {v}")
+
+
 def main() -> None:
     app()
 
