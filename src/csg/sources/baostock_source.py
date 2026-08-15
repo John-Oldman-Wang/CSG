@@ -59,10 +59,40 @@ def to_bs_code(code: str) -> str:
 
 
 def _fetch(rs) -> pd.DataFrame:
+    """读取结果集，**必须先检查 error_code**。
+
+    实测教训：baostock 会话失效后，查询不抛异常、不报错，
+    只是返回空结果集。若直接遍历 rs.next()，会把「会话已断」
+    误判为「该股票无数据」——一次采集因此 341/382 静默失败，
+    统计上表现为 skipped 而非 failed，极难发现。
+
+    这是本项目第三次遇到静默失效，模式相同：
+    错误没有抛出，只是结果为空。
+    """
+    if rs is None:
+        raise RuntimeError("baostock 返回空结果对象")
+    if rs.error_code != "0":
+        raise RuntimeError(f"baostock 查询失败 [{rs.error_code}] {rs.error_msg}")
+
     rows = []
     while rs.next():
         rows.append(rs.get_row_data())
     return pd.DataFrame(rows, columns=rs.fields) if rows else pd.DataFrame()
+
+
+def _relogin() -> None:
+    """强制重新登录 —— 会话失效后的恢复手段。"""
+    global _logged_in
+    import baostock as bs
+
+    with _login_lock:
+        if _logged_in:
+            try:
+                bs.logout()
+            except Exception:  # noqa: BLE001 — 登出失败不影响重新登录
+                pass
+            _logged_in = False
+    _ensure_login()
 
 
 def fetch_daily_quote(code: str, start: dt.date, end: dt.date) -> pd.DataFrame:
@@ -81,14 +111,28 @@ def fetch_daily_quote(code: str, start: dt.date, end: dt.date) -> pd.DataFrame:
     s, e = start.isoformat(), end.isoformat()
     fields = "date,open,high,low,close,volume,amount,turn,pctChg"
 
-    raw = _fetch(bs.query_history_k_data_plus(
-        bs_code, fields, start_date=s, end_date=e, frequency="d", adjustflag="3"))
+    def _query(flag: str, cols: str) -> pd.DataFrame:
+        """查询一次；会话失效则重登后重试一次。
+
+        空结果不重试——那可能是真的没数据（未上市/长期停牌）。
+        只有明确的错误码才触发重试，避免把正常的空数据放大成重试风暴。
+        """
+        try:
+            return _fetch(bs.query_history_k_data_plus(
+                bs_code, cols, start_date=s, end_date=e,
+                frequency="d", adjustflag=flag))
+        except RuntimeError as exc:
+            log.warning("%s 查询失败(%s)，重新登录后重试", code, exc)
+            _relogin()
+            return _fetch(bs.query_history_k_data_plus(
+                bs_code, cols, start_date=s, end_date=e,
+                frequency="d", adjustflag=flag))
+
+    raw = _query("3", fields)
     if raw.empty:
         return pd.DataFrame()
 
-    hfq = _fetch(bs.query_history_k_data_plus(
-        bs_code, "date,close", start_date=s, end_date=e,
-        frequency="d", adjustflag="1"))
+    hfq = _query("1", "date,close")
 
     out = pd.DataFrame()
     out["code"] = [code] * len(raw)
