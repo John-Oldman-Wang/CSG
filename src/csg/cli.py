@@ -114,6 +114,25 @@ def sync_financials(
     console.print(f"[green]财务完成[/green] {stats}")
 
 
+@sync_app.command("research")
+def sync_research(
+    limit: Annotated[int, typer.Option(help="仅同步前 N 只，用于试跑")] = 0,
+    force: Annotated[bool, typer.Option(help="忽略水位，全量重拉")] = False,
+    verbose: bool = True,
+) -> None:
+    """研报与盈利预测（约 202 条/只，35 分钟全量）。
+
+    每次采集保留快照：历史盈利预测无法回溯获取，
+    只能从现在开始积累一致预期的时间序列。
+    """
+    _setup_logging(verbose)
+    with open_db(DB_PATH) as db:
+        codes = _pool_codes(db, limit or None)
+        console.print(f"目标 {len(codes)} 只，预计 {len(codes) * 3.5 / 60:.0f} 分钟")
+        stats = Ingestor(db).sync_research(codes, force=force)
+    console.print(f"[green]研报完成[/green] {stats}")
+
+
 @sync_app.command("retry")
 def sync_retry(
     dataset: Annotated[str, typer.Argument(help="数据集名，如 fin_income / daily_quote")],
@@ -246,6 +265,48 @@ def validate_flags(
         console.print(
             "\n[yellow]注意：覆盖率必须与误报率同看。"
             "把所有股票都标红，覆盖率必然 100%。[/yellow]")
+
+
+@validate_app.command("research")
+def validate_research(
+    view: Annotated[str, typer.Option(
+        help="视角：all/rating/change/prior/density/first")] = "all",
+) -> None:
+    """验证④ 研报是否有预测力。
+
+    发现期(2018-2022) 与验证期(2023-) 分别输出。
+    判定标准：同一效应须在两期同向，仅发现期成立者视为噪音。
+
+    注：目标价不在数据中（实测预测PE = 发布日股价/预测EPS），
+    故「是否涨到目标价」无法验证，改以路径指标替代。
+    """
+    from csg.validation import research_study as rs
+
+    with open_db(DB_PATH) as db:
+        n = db.query("SELECT count(*) AS n FROM research_report")["n"].iloc[0]
+        q = db.query("SELECT count(*) AS n FROM daily_quote")["n"].iloc[0]
+        console.print(f"研报 {n} 条 · 行情 {q} 行")
+        if n == 0 or q == 0:
+            console.print("[yellow]需先完成 sync research 与 sync quotes[/yellow]")
+            raise typer.Exit()
+
+        results = rs.run_full_study(db)
+        wanted = {
+            "rating": "评级", "change": "评级调整", "prior": "发布前走势",
+            "density": "覆盖密度", "first": "首次覆盖",
+        }.get(view)
+
+        for key, table in results.items():
+            if wanted and wanted not in key:
+                continue
+            if table is None or table.empty:
+                console.print(f"[dim]{key}：样本不足[/dim]")
+                continue
+            _show(table, key)
+
+        console.print(
+            "\n[yellow]判定：只有在发现期与验证期**同向**的效应才可采信。"
+            "样本数过小的分组（<50）统计量不可靠。[/yellow]")
 
 
 @validate_app.command("cycle")

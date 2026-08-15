@@ -196,6 +196,65 @@ class Ingestor:
         return stats
 
     # ------------------------------------------------------------------
+    # 研报
+    # ------------------------------------------------------------------
+
+    def sync_research(
+        self,
+        codes: Sequence[str],
+        *,
+        refresh_days: int = 7,
+        force: bool = False,
+    ) -> dict[str, int]:
+        """研报与盈利预测。
+
+        `refresh_days` 控制重采频率：研报持续新增，但无需每日重拉。
+        每次采集写入新的 snapshot_date，历史快照全部保留——
+        这是积累「一致预期随时间变动」序列的唯一途径，而该序列
+        无法向历史回溯获取（实测 2018-2023 年研报的预测字段全为空）。
+        """
+        stats = {"ok": 0, "skipped": 0, "failed": 0, "reports": 0, "forecasts": 0}
+        today = dt.date.today()
+
+        for i, code in enumerate(codes, 1):
+            if not force:
+                wm = self.db.get_watermark("research_report", code)
+                if wm is not None and (today - wm).days < refresh_days:
+                    stats["skipped"] += 1
+                    continue
+
+            try:
+                rep, fc = aks.fetch_research_reports(code)
+                if rep.empty:
+                    self.db.set_watermark("research_report", code,
+                                          last_success_date=today, status="ok")
+                    stats["skipped"] += 1
+                    continue
+
+                stats["reports"] += self.db.upsert(
+                    "research_report", rep,
+                    ["code", "publish_date", "institution", "title"])
+                if not fc.empty:
+                    stats["forecasts"] += self.db.upsert(
+                        "research_forecast", fc,
+                        ["code", "publish_date", "institution",
+                         "forecast_year", "snapshot_date"])
+
+                self.db.set_watermark("research_report", code,
+                                      last_success_date=today, status="ok")
+                stats["ok"] += 1
+            except Exception as exc:  # noqa: BLE001
+                self.db.set_watermark("research_report", code, status="failed",
+                                      error=str(exc)[:300])
+                stats["failed"] += 1
+                log.warning("[%d/%d] %s 研报失败: %s", i, len(codes), code, exc)
+
+            if i % 25 == 0:
+                log.info("研报进度 %d/%d %s", i, len(codes), stats)
+
+        return stats
+
+    # ------------------------------------------------------------------
     # 健康检查
     # ------------------------------------------------------------------
 

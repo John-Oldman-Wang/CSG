@@ -170,6 +170,49 @@ CREATE TABLE IF NOT EXISTS fin_cashflow (
 );
 
 -- ============================================================
+-- 研报
+-- ============================================================
+
+-- 用途限定（见 docs/AI_ASSIST.md 第七节）：把研报当**数据源**，不当观点源。
+-- 评级本身信息量极低（券商买入评级常年占 95%+），入库是为了**验证它到底
+-- 有没有预测力**——测出「无效」同样是有价值的结论，可据此永久关掉这个输入。
+CREATE TABLE IF NOT EXISTS research_report (
+    code           VARCHAR NOT NULL,
+    publish_date   DATE NOT NULL,
+    institution    VARCHAR NOT NULL,
+    title          VARCHAR NOT NULL,
+    rating         VARCHAR,            -- 东财评级：买入/增持/中性/减持
+    industry       VARCHAR,
+    pdf_url        VARCHAR,
+    snapshot_date  DATE NOT NULL,      -- 本行的采集日期
+    PRIMARY KEY (code, publish_date, institution, title)
+);
+
+-- 盈利预测（长表）。
+--
+-- 用长表而非宽表：源接口的预测年份列是**动态**的（当前为 2026/2027/2028），
+-- 宽表结构会随时间失效。
+--
+-- ⚠️ 历史局限：接口只返回「对当前及未来年份的预测」，2018-2023 年发布的
+--    研报其预测字段全为空（实测非空率 0%）。因此**历史盈利预测准确度
+--    无法回溯验证**——这是数据壁垒，非实现问题。
+--
+-- snapshot_date 进入主键的原因：同一份研报在不同时间采集可能取到不同的
+-- 预测值（数据方会回填修订）。保留每次快照，才能积累出「一致预期随时间
+-- 变动」的序列——而预期差正是研报真正有价值的部分。今天开始存，
+-- 一年后就拥有一段买不到的历史。
+CREATE TABLE IF NOT EXISTS research_forecast (
+    code           VARCHAR NOT NULL,
+    publish_date   DATE NOT NULL,
+    institution    VARCHAR NOT NULL,
+    forecast_year  INTEGER NOT NULL,
+    eps            DOUBLE,
+    pe             DOUBLE,
+    snapshot_date  DATE NOT NULL,
+    PRIMARY KEY (code, publish_date, institution, forecast_year, snapshot_date)
+);
+
+-- ============================================================
 -- 管线状态 —— 幂等自愈的基础
 -- ============================================================
 
@@ -210,3 +253,5 @@ CREATE INDEX IF NOT EXISTS idx_income_disc   ON fin_income(disclosure_date);
 CREATE INDEX IF NOT EXISTS idx_balance_disc  ON fin_balance(disclosure_date);
 CREATE INDEX IF NOT EXISTS idx_cashflow_disc ON fin_cashflow(disclosure_date);
 CREATE INDEX IF NOT EXISTS idx_industry_name ON industry_member(taxonomy, industry_name);
+CREATE INDEX IF NOT EXISTS idx_report_date   ON research_report(publish_date);
+CREATE INDEX IF NOT EXISTS idx_report_code   ON research_report(code, publish_date);

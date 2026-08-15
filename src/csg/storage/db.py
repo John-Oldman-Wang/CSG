@@ -253,6 +253,11 @@ class Database:
 
 
 def open_db(path: Path | str = DEFAULT_DB, **kwargs) -> Database:
+    """打开数据库；非只读时确保 schema 就绪。
+
+    只读连接不能执行 CREATE，故跳过建表——只读场景下库必然已存在。
+    """
     db = Database(path, **kwargs)
-    db.init_schema()
+    if not kwargs.get("read_only"):
+        db.init_schema()
     return db

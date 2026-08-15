@@ -301,3 +301,64 @@ def fetch_cninfo_announcements(
     out["announce_date"] = pd.to_datetime(out["announce_time"], errors="coerce").dt.date
     out.insert(0, "code", code)
     return out[["code", "title", "announce_date", "url"]]
+
+
+# ----------------------------------------------------------------------
+# 研报
+# ----------------------------------------------------------------------
+
+def fetch_research_reports(code: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """个股研报及其盈利预测，返回 (研报, 预测长表)。
+
+    实测数据特征（宁德时代 469 条，2018-05 至今）：
+      - 评级、机构、发布日期：全年份完整
+      - 盈利预测：仅 2024 年后发布的研报有值，更早的全为空
+
+    后者是数据壁垒而非实现缺陷：接口只返回「对当前及未来年份的预测」。
+    因此历史盈利预测准确度无法回溯验证，只能从现在开始积累快照。
+    """
+    df = call(ak.stock_research_report_em, symbol=code, retries=4)
+    if df is None or df.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    today = dt.date.today()
+    rep = pd.DataFrame(index=df.index)
+    rep["code"] = code
+    rep["publish_date"] = pd.to_datetime(df["日期"], errors="coerce").dt.date
+    rep["institution"] = df.get("机构", pd.Series(dtype=str)).fillna("未知")
+    rep["title"] = df.get("报告名称", pd.Series(dtype=str)).fillna("")
+    rep["rating"] = df.get("东财评级")
+    rep["industry"] = df.get("行业")
+    rep["pdf_url"] = df.get("报告PDF链接")
+    rep["snapshot_date"] = today
+    rep = rep.dropna(subset=["publish_date"]).drop_duplicates(
+        ["code", "publish_date", "institution", "title"])
+
+    # 盈利预测宽表转长表：列名形如 "2026-盈利预测-收益" / "2026-盈利预测-市盈率"
+    records: list[dict] = []
+    years = sorted({c.split("-")[0] for c in df.columns if "盈利预测" in str(c)})
+    for year in years:
+        eps_col, pe_col = f"{year}-盈利预测-收益", f"{year}-盈利预测-市盈率"
+        if eps_col not in df.columns:
+            continue
+        sub = df[[eps_col] + ([pe_col] if pe_col in df.columns else [])].copy()
+        sub["publish_date"] = pd.to_datetime(df["日期"], errors="coerce").dt.date
+        sub["institution"] = df.get("机构", pd.Series(dtype=str)).fillna("未知")
+        sub = sub[pd.to_numeric(sub[eps_col], errors="coerce").notna()]
+        for _, r in sub.iterrows():
+            records.append({
+                "code": code,
+                "publish_date": r["publish_date"],
+                "institution": r["institution"],
+                "forecast_year": int(year),
+                "eps": pd.to_numeric(r[eps_col], errors="coerce"),
+                "pe": pd.to_numeric(r.get(pe_col), errors="coerce")
+                     if pe_col in df.columns else None,
+                "snapshot_date": today,
+            })
+
+    fc = pd.DataFrame(records)
+    if not fc.empty:
+        fc = fc.dropna(subset=["publish_date"]).drop_duplicates(
+            ["code", "publish_date", "institution", "forecast_year", "snapshot_date"])
+    return rep, fc
