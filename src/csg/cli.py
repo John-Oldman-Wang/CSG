@@ -149,12 +149,18 @@ def sync_retry(
             console.print("[green]无失败条目[/green]")
             raise typer.Exit()
         console.print(f"重试 {len(codes)} 只")
+        stmt_map = {"fin_income": "income", "fin_balance": "balance",
+                    "fin_cashflow": "cashflow"}
         if dataset == "daily_quote":
             stats = ing.sync_daily_quotes(codes, force=True)
+        elif dataset == "research_report":
+            stats = ing.sync_research(codes, force=True)
+        elif dataset in stmt_map:
+            stats = ing.sync_financials(codes, statements=[stmt_map[dataset]],
+                                        force=True)
         else:
-            stmt = {"fin_income": "income", "fin_balance": "balance",
-                    "fin_cashflow": "cashflow"}[dataset]
-            stats = ing.sync_financials(codes, statements=[stmt], force=True)
+            console.print(f"[red]未知数据集 {dataset}[/red]")
+            raise typer.Exit(1)
     console.print(f"[green]完成[/green] {stats}")
 
 
@@ -273,6 +279,8 @@ def validate_flags(
 def validate_research(
     view: Annotated[str, typer.Option(
         help="视角：all/rating/change/prior/density/first")] = "all",
+    save: Annotated[bool, typer.Option(help="结果存入 validation_run/result")] = True,
+    note: Annotated[str, typer.Option(help="本次运行备注")] = "",
 ) -> None:
     """验证④ 研报是否有预测力。
 
@@ -281,8 +289,12 @@ def validate_research(
 
     注：目标价不在数据中（实测预测PE = 发布日股价/预测EPS），
     故「是否涨到目标价」无法验证，改以路径指标替代。
+
+    结果默认落库：回测依赖当时的数据状态，数据在增长，
+    同段代码下月跑出的数字会不同，无快照则无法解释差异。
     """
     from csg.validation import research_study as rs
+    from csg.validation import store
 
     with open_db(DB_PATH) as db:
         n = db.query("SELECT count(*) AS n FROM research_report")["n"].iloc[0]
@@ -292,7 +304,9 @@ def validate_research(
             console.print("[yellow]需先完成 sync research 与 sync quotes[/yellow]")
             raise typer.Exit()
 
+        console.print("[dim]计算中（全部下推 DuckDB，视数据量需数分钟）…[/dim]")
         results = rs.run_full_study(db)
+
         wanted = {
             "rating": "评级", "change": "评级调整", "prior": "发布前走势",
             "density": "覆盖密度", "first": "首次覆盖",
@@ -306,9 +320,75 @@ def validate_research(
                 continue
             _show(table, key)
 
+        if save:
+            rid = store.save_run(
+                db, "research_reliability",
+                params={"in_sample": [str(d) for d in rs.IN_SAMPLE],
+                        "out_sample": [str(d) for d in rs.OUT_SAMPLE],
+                        "horizons": list(rs.DEFAULT_HORIZONS),
+                        "main_horizon": rs.MAIN_HORIZON},
+                results=results, note=note)
+            console.print(f"\n[green]结果已保存 run_id = {rid}[/green]")
+            console.print("[dim]查看历史：csg validate runs[/dim]")
+
         console.print(
             "\n[yellow]判定：只有在发现期与验证期**同向**的效应才可采信。"
             "样本数过小的分组（<50）统计量不可靠。[/yellow]")
+
+
+@validate_app.command("runs")
+def list_validation_runs(
+    vtype: Annotated[str, typer.Option(help="按验证类型过滤")] = "",
+) -> None:
+    """历史验证运行记录。"""
+    from csg.validation import store
+
+    with open_db(DB_PATH, read_only=True) as db:
+        _show(store.list_runs(db, vtype or None), "验证运行历史")
+
+
+@validate_app.command("show")
+def show_validation_run(run_id: str) -> None:
+    """还原某次验证的完整结果。"""
+    from csg.validation import store
+
+    with open_db(DB_PATH, read_only=True) as db:
+        meta = db.query(
+            "SELECT validation_type, run_at, params, data_snapshot, note "
+            "FROM validation_run WHERE run_id = ?", [run_id])
+        if meta.empty:
+            console.print("[red]run_id 不存在[/red]")
+            raise typer.Exit(1)
+        r = meta.iloc[0]
+        console.print(f"[bold]{r['validation_type']}[/bold]  {r['run_at']}")
+        console.print(f"[dim]数据快照 {r['data_snapshot']}[/dim]\n")
+        for key, table in store.load_run(db, run_id).items():
+            _show(table, key)
+
+
+@validate_app.command("conclude")
+def add_conclusion(
+    vtype: Annotated[str, typer.Option(help="验证类型")],
+    finding: Annotated[str, typer.Option(help="发现的效应")],
+    in_sample: Annotated[str, typer.Option(help="发现期结果摘要")],
+    out_sample: Annotated[str, typer.Option(help="验证期结果摘要")],
+    verdict: Annotated[str, typer.Option(help="adopted/rejected/pending")],
+    run_id: Annotated[str, typer.Option(help="关联的 run_id")] = "",
+    applied_to: Annotated[str, typer.Option(help="应用于哪条决策规则")] = "",
+) -> None:
+    """记录人工判定 —— 把回测发现转化为是否采纳。
+
+    adopted 只应在发现期与验证期**同向**时使用。
+    被否定的发现同样保留：记住哪些假设失败过，与记住哪些成立同样重要。
+    """
+    from csg.validation import store
+
+    with open_db(DB_PATH) as db:
+        cid = store.save_conclusion(
+            db, validation_type=vtype, finding=finding, in_sample=in_sample,
+            out_sample=out_sample, verdict=verdict,
+            run_id=run_id or None, applied_to=applied_to)
+    console.print(f"[green]结论已记录 {cid}（{verdict}）[/green]")
 
 
 @validate_app.command("cycle")

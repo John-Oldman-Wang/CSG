@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import random
+import socket
 import time
 from collections.abc import Callable, Sequence
 from typing import TypeVar
@@ -21,6 +22,21 @@ from typing import TypeVar
 import pandas as pd
 
 log = logging.getLogger(__name__)
+
+# ----------------------------------------------------------------------
+# 全局 socket 超时 —— 防止请求无限挂起
+# ----------------------------------------------------------------------
+#
+# 实测教训：一次研报采集在 375/604 处挂死，进程存活但两小时仅消耗
+# 21 秒 CPU。akshare 部分接口未设 timeout，底层 socket 会无限等待。
+#
+# 重试逻辑对此**无效**——它只能捕获抛出的异常，无法处理「永不返回」。
+# 这正是架构文档所述的「静默失效」：系统看起来在跑，实际早已停止且不报错。
+#
+# socket.setdefaulttimeout 影响本进程所有 socket 操作，
+# 使挂起转化为可捕获的异常，重试与熔断机制才能真正生效。
+SOCKET_TIMEOUT = 45.0
+socket.setdefaulttimeout(SOCKET_TIMEOUT)
 
 T = TypeVar("T")
 
@@ -31,6 +47,8 @@ _RETRYABLE_NAMES = {
     "ConnectTimeout",
     "ReadTimeout",
     "Timeout",
+    "timeout",          # socket.timeout：全局超时触发时抛出
+    "TimeoutError",
     "SSLError",
     "ChunkedEncodingError",
     "RemoteDisconnected",
