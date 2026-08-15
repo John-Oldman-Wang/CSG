@@ -139,3 +139,50 @@ export interface ValidationRun {
   行情行数: string | null;
   结果行数: number;
 }
+
+/** 评级调整方向。down 最具信息量——逆着分析师的激励机制。 */
+export type RatingChange = "up" | "down" | "unchanged" | "first";
+
+export interface ReportRow {
+  report_id: string;
+  title: string;
+  publish_date: string;
+  institution: string;
+  code: string;
+  stock_name: string | null;
+  industry: string | null;
+  rating: string | null;
+  prev_rating: string | null;
+  rating_change: RatingChange;
+  has_forecast: boolean;
+  pdf_url: string | null;
+}
+
+export interface ReportSearchResult {
+  total: number;
+  page: number;
+  page_size: number;
+  items: ReportRow[];
+}
+
+export interface ReportFilters {
+  start?: string;
+  end?: string;
+  title?: string;
+  institution?: string;
+  code?: string;
+  stock?: string;
+  industry?: string;
+  rating?: string;
+  rating_change?: RatingChange;
+  page?: number;
+  page_size?: number;
+}
+
+export interface Institution {
+  name: string;
+  report_count: number;
+  stock_count: number;
+  first_date: string;
+  last_date: string;
+}

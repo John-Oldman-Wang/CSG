@@ -4,6 +4,9 @@ import type {
   CsgEvent,
   FinancialPeriod,
   HealthInfo,
+  Institution,
+  ReportFilters,
+  ReportSearchResult,
   ResearchReport,
   ReviewTask,
   StockBasic,
@@ -95,6 +98,23 @@ export const api = {
       data_snapshot: Record<string, unknown>;
       results: Record<string, Record<string, unknown>[]>;
     }>(`/validations/${runId}`),
+
+  searchReports: (filters: ReportFilters) => {
+    const params: Record<string, string | number> = {};
+    for (const [k, v] of Object.entries(filters)) {
+      if (v === undefined || v === null || v === "") continue;
+      params[k] = v as string | number;
+    }
+    return get<ReportSearchResult>("/reports", params);
+  },
+
+  institutions: (minReports = 5, keyword?: string) =>
+    get<Institution[]>(
+      "/institutions",
+      keyword ? { min_reports: minReports, keyword } : { min_reports: minReports },
+    ),
+
+  reportIndustries: () => get<{ name: string; report_count: number }[]>("/report-industries"),
 
   watchlist: () => get<(WatchlistEntry & { name: string | null })[]>("/watchlist"),
 };

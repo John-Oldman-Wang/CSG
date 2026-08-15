@@ -1,6 +1,7 @@
 import { NavLink, Route, Routes } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import Dashboard from "@/pages/Dashboard";
+import Reports from "@/pages/Reports";
 import StockDetail from "@/pages/StockDetail";
 import TaskDetail from "@/pages/TaskDetail";
 import Tasks from "@/pages/Tasks";
@@ -9,6 +10,7 @@ import Validations from "@/pages/Validations";
 const NAV = [
   { to: "/", label: "总览", end: true },
   { to: "/tasks", label: "复核任务" },
+  { to: "/reports", label: "研报检索" },
   { to: "/validations", label: "验证结果" },
 ];
 
@@ -47,6 +49,7 @@ export default function App() {
           <Route path="/tasks" element={<Tasks />} />
           <Route path="/tasks/:taskId" element={<TaskDetail />} />
           <Route path="/stocks/:code" element={<StockDetail />} />
+          <Route path="/reports" element={<Reports />} />
           <Route path="/validations" element={<Validations />} />
         </Routes>
       </main>

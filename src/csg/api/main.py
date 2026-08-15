@@ -358,3 +358,234 @@ def get_watchlist() -> list[dict]:
         return _records(db.query(
             "SELECT w.*, b.name FROM watchlist w "
             "LEFT JOIN stock_basic b ON b.code = w.code ORDER BY w.tier, w.code"))
+
+
+# ----------------------------------------------------------------------
+# 研报检索
+# ----------------------------------------------------------------------
+
+# 评级到分值，用于判定调整方向。
+# 绝对评级几乎无信息量（实测买入占 94%），有价值的是**变化**——
+# 尤其下调：逆着分析师的激励机制，不愿得罪覆盖对象却仍下调。
+_RATING_SCORE_SQL = """
+    CASE rating
+        WHEN '买入' THEN 5 WHEN '增持' THEN 4
+        WHEN '持有' THEN 3 WHEN '中性' THEN 3
+        WHEN '减持' THEN 2 WHEN '卖出' THEN 1
+    END
+"""
+
+
+class ReportQuery(BaseModel):
+    """研报检索结果的单条记录。"""
+
+    report_id: str
+    title: str
+    publish_date: str
+    institution: str
+    code: str
+    stock_name: str | None
+    industry: str | None
+    rating: str | None
+    prev_rating: str | None
+    rating_change: str | None      # up / down / unchanged / first
+    has_forecast: bool
+    pdf_url: str | None
+
+
+@app.get("/api/institutions")
+def list_institutions(
+    min_reports: Annotated[int, Query(ge=1)] = 1,
+    keyword: str | None = None,
+) -> list[dict]:
+    """机构列表及其研报量、覆盖股票数、时间跨度。
+
+    覆盖股票数与时间跨度用于判断该机构的统计量是否可信——
+    只覆盖三只股票的机构，其「准确率」没有解读价值。
+    """
+    with read_db() as db:
+        sql = """
+            SELECT institution AS name,
+                   count(*)                    AS report_count,
+                   count(DISTINCT code)        AS stock_count,
+                   min(publish_date)           AS first_date,
+                   max(publish_date)           AS last_date
+            FROM research_report
+            WHERE institution IS NOT NULL AND institution <> ''
+        """
+        params: list = []
+        if keyword:
+            sql += " AND institution ILIKE ?"
+            params.append(f"%{keyword}%")
+        sql += " GROUP BY institution HAVING count(*) >= ? ORDER BY report_count DESC"
+        params.append(min_reports)
+        return _records(db.query(sql, params))
+
+
+@app.get("/api/report-industries")
+def list_report_industries() -> list[dict]:
+    """研报涉及的行业列表。"""
+    with read_db() as db:
+        return _records(db.query("""
+            SELECT industry AS name, count(*) AS report_count
+            FROM research_report
+            WHERE industry IS NOT NULL AND industry <> ''
+            GROUP BY industry ORDER BY report_count DESC
+        """))
+
+
+@app.get("/api/reports")
+def search_reports(
+    start: str | None = None,
+    end: str | None = None,
+    title: Annotated[str | None, Query(description="标题模糊匹配")] = None,
+    institution: str | None = None,
+    code: str | None = None,
+    stock: Annotated[str | None, Query(description="股票代码或名称模糊匹配")] = None,
+    industry: str | None = None,
+    rating: str | None = None,
+    rating_change: Annotated[
+        str | None,
+        Query(pattern="^(up|down|unchanged|first)$",
+              description="评级调整方向。down 最具信息量")
+    ] = None,
+    has_forecast: bool | None = None,
+    order_by: Annotated[str, Query(pattern="^(publish_date|institution|code)$")] = "publish_date",
+    desc: bool = True,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> dict:
+    """研报检索。
+
+    `report_id` 由自然键哈希生成（md5(code+日期+机构+标题)），
+    稳定且无需改动表结构——已入库数据不必迁移。
+
+    **rating_change 是本接口最有价值的过滤条件**：绝对评级筛选意义有限
+    （买入占 94%），而「谁在什么时候改了主意」才携带信息。
+    """
+    conds: list[str] = []
+    params: list = []
+
+    if start:
+        conds.append("r.publish_date >= ?")
+        params.append(dt.date.fromisoformat(start))
+    if end:
+        conds.append("r.publish_date <= ?")
+        params.append(dt.date.fromisoformat(end))
+    if title:
+        conds.append("r.title ILIKE ?")
+        params.append(f"%{title}%")
+    if institution:
+        conds.append("r.institution ILIKE ?")
+        params.append(f"%{institution}%")
+    if code:
+        conds.append("r.code = ?")
+        params.append(code)
+    if stock:
+        conds.append("(r.code ILIKE ? OR b.name ILIKE ?)")
+        params += [f"%{stock}%", f"%{stock}%"]
+    if industry:
+        conds.append("r.industry = ?")
+        params.append(industry)
+    if rating:
+        conds.append("r.rating = ?")
+        params.append(rating)
+
+    where = f"WHERE {' AND '.join(conds)}" if conds else ""
+
+    # 评级变化需在窗口函数计算后过滤，故用外层 CTE
+    change_filter = ""
+    if rating_change:
+        change_filter = "WHERE rating_change = ?"
+
+    base = f"""
+        WITH scored AS (
+            SELECT r.*, b.name AS stock_name,
+                   {_RATING_SCORE_SQL} AS score
+            FROM research_report r
+            LEFT JOIN stock_basic b ON b.code = r.code
+            {where}
+        ),
+        seq AS (
+            SELECT *,
+                   lag(score)  OVER w AS prev_score,
+                   lag(rating) OVER w AS prev_rating
+            FROM scored
+            WINDOW w AS (PARTITION BY code, institution ORDER BY publish_date)
+        ),
+        labeled AS (
+            SELECT *,
+                   CASE
+                       WHEN prev_score IS NULL THEN 'first'
+                       WHEN score > prev_score THEN 'up'
+                       WHEN score < prev_score THEN 'down'
+                       ELSE 'unchanged'
+                   END AS rating_change
+            FROM seq
+        )
+        SELECT * FROM labeled {change_filter}
+    """
+    if rating_change:
+        params.append(rating_change)
+
+    with read_db() as db:
+        total = db.query(
+            f"SELECT count(*) AS n FROM ({base})", list(params))["n"].iloc[0]
+
+        direction = "DESC" if desc else "ASC"
+        rows = db.query(
+            f"""
+            SELECT md5(l.code || CAST(l.publish_date AS VARCHAR)
+                       || l.institution || l.title)      AS report_id,
+                   l.title, l.publish_date, l.institution,
+                   l.code, l.stock_name, l.industry,
+                   l.rating, l.prev_rating, l.rating_change, l.pdf_url,
+                   EXISTS (
+                       SELECT 1 FROM research_forecast f
+                       WHERE f.code = l.code
+                         AND f.publish_date = l.publish_date
+                         AND f.institution = l.institution
+                   ) AS has_forecast
+            FROM ({base}) l
+            ORDER BY l.{order_by} {direction}, l.code
+            LIMIT ? OFFSET ?
+            """,
+            [*params, page_size, (page - 1) * page_size],
+        )
+
+        if has_forecast is not None and not rows.empty:
+            rows = rows[rows["has_forecast"] == has_forecast]
+
+        return {
+            "total": int(total),
+            "page": page,
+            "page_size": page_size,
+            "items": _records(rows),
+        }
+
+
+@app.get("/api/reports/{report_id}")
+def report_detail(report_id: str) -> dict:
+    """单条研报详情，含其盈利预测（若有）。"""
+    with read_db() as db:
+        df = db.query(
+            """
+            SELECT r.*, b.name AS stock_name,
+                   md5(r.code || CAST(r.publish_date AS VARCHAR)
+                       || r.institution || r.title) AS report_id
+            FROM research_report r
+            LEFT JOIN stock_basic b ON b.code = r.code
+            WHERE md5(r.code || CAST(r.publish_date AS VARCHAR)
+                      || r.institution || r.title) = ?
+            """, [report_id])
+        if df.empty:
+            raise HTTPException(404, "研报不存在")
+        row = _records(df)[0]
+
+        fc = db.query(
+            "SELECT forecast_year, eps, pe, snapshot_date FROM research_forecast "
+            "WHERE code = ? AND publish_date = ? AND institution = ? "
+            "ORDER BY forecast_year, snapshot_date",
+            [row["code"], row["publish_date"], row["institution"]])
+        row["forecasts"] = _records(fc)
+        return row
