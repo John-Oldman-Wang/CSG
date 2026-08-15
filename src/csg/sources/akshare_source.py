@@ -66,6 +66,11 @@ _BALANCE_MAP = {
     "SHORT_LOAN": "st_borr",
     "LONG_LOAN": "lt_borr",
     "CONTRACT_LIAB": "contract_liab",
+    # 总股本：市值 = 收盘价 × share_capital。
+    # baostock 与 akshare 均无历史市值接口，但股本就在资产负债表里，
+    # 逐期可得，无需额外数据源或付费。
+    "SHARE_CAPITAL": "share_capital",
+    "TREASURY_SHARES": "treasury_shares",
 }
 
 _CASHFLOW_MAP = {

@@ -26,11 +26,15 @@ export default function CandleChart({
   data,
   height = 380,
   markers,
+  priceLines,
 }: {
   data: Candle[];
   height?: number;
   /** 事件标记，如研报发布日、财报披露日 */
   markers?: { time: string; text: string; color?: string }[];
+  /** 水平参考线。用于标注推算的隐含价格等——
+   *  调用方须自行在图外说明其来源，图上只画线不作解释。 */
+  priceLines?: { price: number; title: string; color?: string }[];
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -107,6 +111,17 @@ export default function CandleChart({
       );
     }
 
+    for (const line of priceLines ?? []) {
+      candles.createPriceLine({
+        price: line.price,
+        color: line.color ?? "#8b8f98",
+        lineWidth: 1,
+        lineStyle: 2, // 虚线：与实际成交价形成视觉区分
+        axisLabelVisible: true,
+        title: line.title,
+      });
+    }
+
     chart.timeScale().fitContent();
 
     const ro = new ResizeObserver(([entry]) => {
@@ -119,7 +134,7 @@ export default function CandleChart({
       chart.remove();
       chartRef.current = null;
     };
-  }, [data, height, markers]);
+  }, [data, height, markers, priceLines]);
 
   if (data.length === 0) {
     return (

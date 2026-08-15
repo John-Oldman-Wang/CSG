@@ -186,3 +186,65 @@ export interface Institution {
   first_date: string;
   last_date: string;
 }
+
+export interface StockOverview {
+  basic: StockBasic;
+  quote: {
+    trade_date: string;
+    close: number;
+    pct_chg: number;
+    turnover: number;
+    volume: number;
+    amount: number;
+  } | null;
+  /** 估值来自 daily_basic（baostock K线接口附带）。
+   *  该表为空时整体为 null —— 缺失与零是两回事，前端须显示「—」。 */
+  valuation: {
+    trade_date: string;
+    pe_ttm: number | null;
+    pb: number | null;
+    ps_ttm: number | null;
+    total_mv: number | null;
+    circ_mv: number | null;
+  } | null;
+  band: { high_52w: number | null; low_52w: number | null } | null;
+}
+
+export interface Forecast {
+  forecast_year: number;
+  eps: number | null;
+  pe: number | null;
+  snapshot_date: string;
+  /** ⚠️ 推算值 = 预测EPS × 发布日PE，**不是研报目标价**。
+   *  接口不提供目标价，其「预测PE」实为发布日股价÷预测EPS。 */
+  implied_price: number | null;
+  basis: string;
+}
+
+export interface ReportPerformance {
+  entry_price: number | null;
+  ret_20: number | null;
+  ret_60: number | null;
+  ret_120: number | null;
+  ret_250: number | null;
+  max_gain: number | null;
+  max_loss: number | null;
+}
+
+export interface ReportAnalysis {
+  report: ReportRow & { industry: string | null; prev_rating: string | null };
+  forecasts: Forecast[];
+  quotes: Candle[];
+  performance: ReportPerformance | null;
+  valuation_at_publish: {
+    trade_date: string;
+    pe_ttm: number | null;
+    pb: number | null;
+    total_mv: number | null;
+  } | null;
+  price_at_publish: number | null;
+  /** 研报发布时点**已披露**的财务，非最新——
+   *  用最新数据评价两年前的研报，是拿他不可能知道的信息苛责他。 */
+  financials_pit: FinancialPeriod[];
+  pit_note: string;
+}

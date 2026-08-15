@@ -5,11 +5,13 @@ import type {
   FinancialPeriod,
   HealthInfo,
   Institution,
+  ReportAnalysis,
   ReportFilters,
   ReportSearchResult,
   ResearchReport,
   ReviewTask,
   StockBasic,
+  StockOverview,
   ValidationRun,
   WatchlistEntry,
 } from "@/types";
@@ -107,6 +109,10 @@ export const api = {
     }
     return get<ReportSearchResult>("/reports", params);
   },
+
+  reportAnalysis: (reportId: string) => get<ReportAnalysis>(`/reports/${reportId}/analysis`),
+
+  stockOverview: (code: string) => get<StockOverview>(`/stocks/${code}/overview`),
 
   institutions: (minReports = 5, keyword?: string) =>
     get<Institution[]>(

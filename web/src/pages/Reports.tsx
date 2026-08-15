@@ -85,7 +85,22 @@ export default function Reports() {
       { field: "stock_name", headerName: "股票", width: 110 },
       { field: "industry", headerName: "行业", width: 100 },
       { field: "institution", headerName: "机构", width: 130 },
-      { field: "title", headerName: "报告名称", flex: 1, minWidth: 240, tooltipField: "title" },
+      {
+        field: "title",
+        headerName: "报告名称",
+        flex: 1,
+        minWidth: 240,
+        tooltipField: "title",
+        cellRenderer: (p: { data?: ReportRow }) =>
+          p.data ? (
+            <Link
+              to={`/reports/${p.data.report_id}`}
+              className="underline decoration-[var(--color-border)] underline-offset-2 hover:decoration-[var(--color-fg)]"
+            >
+              {p.data.title}
+            </Link>
+          ) : null,
+      },
       {
         field: "rating_change",
         headerName: "评级变化",

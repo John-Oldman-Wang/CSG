@@ -135,6 +135,28 @@ def sync_research(
     console.print(f"[green]研报完成[/green] {stats}")
 
 
+@sync_app.command("valuations")
+def sync_valuations(
+    limit: Annotated[int, typer.Option(help="仅同步前 N 只")] = 0,
+    force: bool = False,
+    verbose: bool = True,
+) -> None:
+    """每日估值 PE/PB/PS（baostock）。
+
+    akshare 无稳定的历史 PE 批量接口，baostock K 线接口原生附带，
+    正好填补验证② 与前端估值展示所需。
+    """
+    _setup_logging(verbose)
+    with open_db(DB_PATH) as db:
+        codes = db.query(
+            "SELECT DISTINCT code FROM daily_quote ORDER BY code")["code"].tolist()
+        if limit:
+            codes = codes[:limit]
+        console.print(f"目标 {len(codes)} 只")
+        stats = Ingestor(db).sync_valuations(codes, force=force)
+    console.print(f"[green]估值完成[/green] {stats}")
+
+
 @sync_app.command("retry")
 def sync_retry(
     dataset: Annotated[str, typer.Argument(help="数据集名，如 fin_income / daily_quote")],

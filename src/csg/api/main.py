@@ -589,3 +589,171 @@ def report_detail(report_id: str) -> dict:
             [row["code"], row["publish_date"], row["institution"]])
         row["forecasts"] = _records(fc)
         return row
+
+
+# ----------------------------------------------------------------------
+# 研报分析（聚合接口）
+# ----------------------------------------------------------------------
+
+@app.get("/api/stocks/{code}/overview")
+def stock_overview(code: str) -> dict:
+    """公司概览：基本信息 + 最新估值 + 最新财务快照。
+
+    估值取自 daily_basic（由 baostock K 线接口附带的 peTTM/pbMRQ/psTTM 填充）。
+    该表为空时返回 null 而非 0——**缺失与零是两回事**，
+    前端应显示「—」，不能显示 0 让人误读为「市盈率为零」。
+    """
+    with read_db() as db:
+        basic = db.query(
+            "SELECT b.code, b.name, b.market, b.exchange, b.list_date, "
+            "       b.delist_date, b.is_active, i.industry_name "
+            "FROM stock_basic b "
+            "LEFT JOIN industry_member i ON i.code = b.code "
+            "  AND i.taxonomy = 'em_industry' WHERE b.code = ?", [code])
+        if basic.empty:
+            raise HTTPException(404, f"未找到股票 {code}")
+
+        quote = db.query(
+            "SELECT trade_date, close, pct_chg, turnover, volume, amount "
+            "FROM daily_quote WHERE code = ? ORDER BY trade_date DESC LIMIT 1", [code])
+        valuation = db.query(
+            "SELECT trade_date, pe_ttm, pb, ps_ttm, total_mv, circ_mv "
+            "FROM daily_basic WHERE code = ? ORDER BY trade_date DESC LIMIT 1", [code])
+
+        # 52 周区间：券商 App 的常规展示项，用于判断当前价位在年内的位置
+        band = db.query(
+            "SELECT max(high) AS high_52w, min(low) AS low_52w "
+            "FROM daily_quote WHERE code = ? "
+            "  AND trade_date >= current_date - 365", [code])
+
+        return {
+            "basic": _records(basic)[0],
+            "quote": _records(quote)[0] if not quote.empty else None,
+            "valuation": _records(valuation)[0] if not valuation.empty else None,
+            "band": _records(band)[0] if not band.empty else None,
+        }
+
+
+@app.get("/api/reports/{report_id}/analysis")
+def report_analysis(
+    report_id: str,
+    window_days: Annotated[int, Query(ge=30, le=1500)] = 500,
+) -> dict:
+    """研报分析上下文，一次请求返回页面所需的全部数据。
+
+    **两条设计要点：**
+
+    1. 财务数据取**研报发布时点已披露**的（PIT），而非最新。
+       这样才能看清分析师当时手里有什么，进而判断其结论是否站得住。
+       用最新财务去评价一份两年前的研报，是拿他不可能知道的信息苛责他。
+
+    2. `implied_price` 为**推算值**：预测EPS × 发布日PE。
+       ⚠️ 不是研报目标价——接口不提供目标价，实测其「预测PE」
+       等于发布日股价÷预测EPS，故乘积仅能还原发布日股价本身。
+       此推算的含义是「若估值倍数维持不变，业绩兑现后对应的价格」，
+       前端必须标注为推算，不得呈现为研报观点。
+    """
+    with read_db() as db:
+        rep = db.query(
+            """
+            SELECT r.*, b.name AS stock_name,
+                   md5(r.code || CAST(r.publish_date AS VARCHAR)
+                       || r.institution || r.title) AS report_id
+            FROM research_report r
+            LEFT JOIN stock_basic b ON b.code = r.code
+            WHERE md5(r.code || CAST(r.publish_date AS VARCHAR)
+                      || r.institution || r.title) = ?
+            """, [report_id])
+        if rep.empty:
+            raise HTTPException(404, "研报不存在")
+        report = _records(rep)[0]
+        code = report["code"]
+        pub = dt.date.fromisoformat(str(report["publish_date"])[:10])
+
+        # 同机构上一次评级 —— 变化才有信息量
+        prev = db.query(
+            "SELECT rating, publish_date FROM research_report "
+            "WHERE code = ? AND institution = ? AND publish_date < ? "
+            "ORDER BY publish_date DESC LIMIT 1",
+            [code, report["institution"], pub])
+        report["prev_rating"] = prev["rating"].iloc[0] if not prev.empty else None
+
+        # 行情窗口：发布日前后各取一段，便于观察「发布前走势」与「发布后表现」
+        quotes = db.query(
+            """
+            SELECT trade_date AS time,
+                   open * adj_factor  AS open,
+                   high * adj_factor  AS high,
+                   low  * adj_factor  AS low,
+                   close * adj_factor AS close,
+                   volume, amount, pct_chg
+            FROM daily_quote
+            WHERE code = ? AND trade_date BETWEEN ? AND ?
+            ORDER BY trade_date
+            """,
+            [code, pub - dt.timedelta(days=window_days),
+             pub + dt.timedelta(days=window_days)])
+
+        # 发布后表现：入场价取发布日之后首个交易日收盘
+        perf = db.query(
+            """
+            WITH px AS (
+                SELECT trade_date, close * adj_factor AS p,
+                       high * adj_factor AS hi, low * adj_factor AS lo,
+                       row_number() OVER (ORDER BY trade_date) AS rn
+                FROM daily_quote WHERE code = ? AND trade_date > ?
+            ),
+            e AS (SELECT p AS entry FROM px WHERE rn = 1)
+            SELECT (SELECT entry FROM e)                        AS entry_price,
+                   max(CASE WHEN rn = 21  THEN p END) / (SELECT entry FROM e) - 1 AS ret_20,
+                   max(CASE WHEN rn = 61  THEN p END) / (SELECT entry FROM e) - 1 AS ret_60,
+                   max(CASE WHEN rn = 121 THEN p END) / (SELECT entry FROM e) - 1 AS ret_120,
+                   max(CASE WHEN rn = 251 THEN p END) / (SELECT entry FROM e) - 1 AS ret_250,
+                   max(CASE WHEN rn <= 251 THEN hi END) / (SELECT entry FROM e) - 1 AS max_gain,
+                   min(CASE WHEN rn <= 251 THEN lo END) / (SELECT entry FROM e) - 1 AS max_loss
+            FROM px WHERE rn <= 251
+            """, [code, pub])
+
+        # 发布时点的估值（用于把预测 EPS 换算成隐含价格）
+        val_at_pub = db.query(
+            "SELECT trade_date, pe_ttm, pb, total_mv FROM daily_basic "
+            "WHERE code = ? AND trade_date <= ? ORDER BY trade_date DESC LIMIT 1",
+            [code, pub])
+        px_at_pub = db.query(
+            "SELECT close FROM daily_quote WHERE code = ? AND trade_date <= ? "
+            "ORDER BY trade_date DESC LIMIT 1", [code, pub])
+
+        forecasts = _records(db.query(
+            "SELECT forecast_year, eps, pe, snapshot_date FROM research_forecast "
+            "WHERE code = ? AND publish_date = ? AND institution = ? "
+            "ORDER BY forecast_year", [code, pub, report["institution"]]))
+
+        # 隐含价格 = 预测EPS × 发布日PE。见本函数 docstring 第 2 条。
+        pe_ref = (float(val_at_pub["pe_ttm"].iloc[0])
+                  if not val_at_pub.empty and val_at_pub["pe_ttm"].iloc[0] else None)
+        for f in forecasts:
+            f["implied_price"] = (
+                round(f["eps"] * pe_ref, 2)
+                if pe_ref and f.get("eps") else None)
+            f["basis"] = "预测EPS × 发布日PE（推算，非研报目标价）"
+
+        # 财务：严格取发布时点已披露者
+        panel = metrics.load_pit_panel(db, pub, codes=[code], periods=8)
+        fin_periods: list = []
+        if not panel.empty:
+            rated = flags.evaluate(metrics.compute_ratios(panel))
+            keep = [c for c in rated.columns if not c.startswith("_") and c != "month"]
+            fin_periods = _records(rated[keep].tail(4))
+
+        return {
+            "report": report,
+            "forecasts": forecasts,
+            "quotes": _records(quotes),
+            "performance": _records(perf)[0] if not perf.empty else None,
+            "valuation_at_publish": (
+                _records(val_at_pub)[0] if not val_at_pub.empty else None),
+            "price_at_publish": (
+                float(px_at_pub["close"].iloc[0]) if not px_at_pub.empty else None),
+            "financials_pit": fin_periods,
+            "pit_note": "财务数据为研报发布时点已披露者，非最新",
+        }

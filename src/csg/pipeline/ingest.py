@@ -220,6 +220,60 @@ class Ingestor:
 
         return stats
 
+    def sync_valuations(
+        self,
+        codes: Sequence[str],
+        *,
+        start: dt.date = DEFAULT_START,
+        end: dt.date | None = None,
+        force: bool = False,
+    ) -> dict[str, int]:
+        """每日估值指标（PE/PB/PS）—— L0 轻量层。
+
+        数据源为 baostock：akshare 没有稳定的历史 PE 批量接口，
+        而 baostock 的 K 线接口原生附带 peTTM/pbMRQ/psTTM，
+        正好填补这一空缺。
+
+        ⚠️ baostock 不提供市值字段。市值需由「收盘价 × 总股本」计算，
+        而总股本数据尚未采集，故 total_mv/circ_mv 暂为 NULL。
+        前端须显示「—」而非 0 —— 缺失与零是两回事。
+        """
+        end = end or dt.date.today()
+        stats = {"ok": 0, "skipped": 0, "failed": 0, "rows": 0}
+
+        for i, code in enumerate(codes, 1):
+            wm = None if force else self.db.get_watermark("daily_basic", code)
+            if wm is not None and wm >= end:
+                stats["skipped"] += 1
+                continue
+
+            try:
+                df = bss.fetch_valuation(code, start, end)
+                if df.empty:
+                    self.db.set_watermark("daily_basic", code,
+                                          last_success_date=end, status="ok")
+                    stats["skipped"] += 1
+                    continue
+
+                cols = ["code", "trade_date", "pe_ttm", "pb", "ps_ttm",
+                        "dv_ratio", "total_mv", "circ_mv"]
+                rows = self.db.upsert("daily_basic", df[cols], ["code", "trade_date"])
+                self.db.set_watermark("daily_basic", code,
+                                      last_success_date=df["trade_date"].max(),
+                                      status="ok")
+                stats["ok"] += 1
+                stats["rows"] += rows
+            except Exception as exc:  # noqa: BLE001
+                self.db.set_watermark("daily_basic", code, last_success_date=wm,
+                                      status="failed", error=str(exc)[:300])
+                stats["failed"] += 1
+                log.warning("[%d/%d] %s 估值失败: %s", i, len(codes), code, exc)
+
+            if i % 25 == 0:
+                log.info("估值进度 %d/%d %s", i, len(codes), stats)
+
+        return stats
+
     # ------------------------------------------------------------------
     # 研报
     # ------------------------------------------------------------------

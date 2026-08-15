@@ -153,6 +153,8 @@ CREATE TABLE IF NOT EXISTS fin_balance (
     st_borr           DOUBLE,   -- 短期借款
     lt_borr           DOUBLE,   -- 长期借款
     contract_liab     DOUBLE,   -- 合同负债   ← 订单前瞻，AI 行业关键
+    share_capital     DOUBLE,   -- 总股本（股）← 市值 = 收盘价 × 本字段
+    treasury_shares   DOUBLE,   -- 库存股
     PRIMARY KEY (code, report_period)
 );
 

@@ -89,8 +89,10 @@ def _relogin() -> None:
         if _logged_in:
             try:
                 bs.logout()
-            except Exception:  # noqa: BLE001 — 登出失败不影响重新登录
-                pass
+            except Exception as exc:  # noqa: BLE001
+                # 登出失败不影响重新登录，但仍需留痕——
+                # 静默吞掉异常正是本项目已撞过三次的静默失效模式
+                log.debug("baostock 登出失败（忽略）: %s", exc)
             _logged_in = False
     _ensure_login()
 

@@ -1,6 +1,7 @@
 import { NavLink, Route, Routes } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import Dashboard from "@/pages/Dashboard";
+import ReportAnalysis from "@/pages/ReportAnalysis";
 import Reports from "@/pages/Reports";
 import StockDetail from "@/pages/StockDetail";
 import TaskDetail from "@/pages/TaskDetail";
@@ -50,6 +51,7 @@ export default function App() {
           <Route path="/tasks/:taskId" element={<TaskDetail />} />
           <Route path="/stocks/:code" element={<StockDetail />} />
           <Route path="/reports" element={<Reports />} />
+          <Route path="/reports/:reportId" element={<ReportAnalysis />} />
           <Route path="/validations" element={<Validations />} />
         </Routes>
       </main>
