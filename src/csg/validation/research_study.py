@@ -96,13 +96,14 @@ def _outcome_sql(horizons: tuple[int, ...], main: int) -> str:
         WHERE close IS NOT NULL AND adj_factor IS NOT NULL AND close > 0
     ),
     rpt AS (
-        SELECT code, publish_date, institution, rating, title
+        SELECT code, publish_date, institution, rating, title, industry
         FROM research_report
         WHERE rating IS NOT NULL AND rating <> ''
           AND publish_date BETWEEN ? AND ?
     ),
     ent AS (
         SELECT r.code, r.publish_date, r.institution, r.rating, r.title,
+               any_value(r.industry) AS industry,
                min(px.rn) AS entry_rn
         FROM rpt r
         JOIN px ON px.code = r.code AND px.trade_date > r.publish_date
@@ -110,6 +111,7 @@ def _outcome_sql(horizons: tuple[int, ...], main: int) -> str:
     ),
     base AS (
         SELECT ent.code, ent.publish_date, ent.institution, ent.rating, ent.title,
+               ent.industry,
                ent.entry_rn, e.trade_date AS entry_date, e.p AS entry_p,
 {ret_cols}
         FROM ent
@@ -386,6 +388,16 @@ def run_full_study(
         if not inst.empty:
             out[f"{label}_机构"] = inst
 
+        # 机构 × 行业：检验「领域专长」。样本极易稀疏，
+        # 故同时输出样本量矩阵，供解读时判断可信度。
+        inst_ind = by_institution_industry(oc, horizons=horizons)
+        if not inst_ind.empty:
+            out[f"{label}_机构×行业"] = inst_ind
+        if label == "发现期":
+            cov = coverage_matrix(oc)
+            if not cov.empty:
+                out["全期_样本量矩阵"] = cov
+
     # 机构排名的跨期稳定性 —— 比排名本身重要得多。
     # 若排名不可复现，任何「XX 证券最准」都只是对历史噪音的精确描述。
     if len(inst_tables) == 2:
@@ -486,3 +498,53 @@ def institution_rank_stability(
         "随机基准": round(1 / 3, 3),
         "结论": verdict,
     }
+
+
+def by_institution_industry(
+    df: pd.DataFrame,
+    *,
+    min_samples: int = 30,
+    horizons: tuple[int, ...] = DEFAULT_HORIZONS,
+) -> pd.DataFrame:
+    """机构 × 行业 —— 检验「领域专长」是否真实存在。
+
+    直觉上成立：一家机构在新能源覆盖深入，不代表它在食品饮料同样可靠。
+    但统计上极其脆弱：
+
+        604 家机构 × 7 个行业 = 4200+ 组合，而样本仅约 1.8 万条研报
+        平均每组合 4 条 —— 绝大多数组合的统计量毫无意义
+
+    因此强制 min_samples 门槛，只保留样本充足的组合。
+    实际能通过门槛的，大概率只有头部机构在其重点覆盖行业上。
+
+    **本表同样必须配合跨期稳定性检验**——维度越细，过拟合越容易。
+    """
+    if df.empty or "institution" not in df.columns or "industry" not in df.columns:
+        return pd.DataFrame()
+
+    rows = []
+    for (inst, ind), grp in df.groupby(["institution", "industry"]):
+        if len(grp) < min_samples:
+            continue
+        rows.append({"机构×行业": f"{inst} / {ind}", **_agg(grp, horizons)})
+
+    if not rows:
+        return pd.DataFrame()
+    out = pd.DataFrame(rows)
+    sort_col = f"超额{horizons[1]}日" if f"超额{horizons[1]}日" in out.columns else "样本数"
+    return out.sort_values(sort_col, ascending=False).reset_index(drop=True)
+
+
+def coverage_matrix(df: pd.DataFrame, *, top_n: int = 15) -> pd.DataFrame:
+    """机构 × 行业的样本量矩阵 —— 先看清哪些组合根本没有足够数据。
+
+    在解读任何分组结果之前应先看本表：样本量决定了结论的可信度，
+    而稀疏的格子无论数字多漂亮都不可采信。
+    """
+    if df.empty or "industry" not in df.columns:
+        return pd.DataFrame()
+    top_inst = df["institution"].value_counts().head(top_n).index
+    sub = df[df["institution"].isin(top_inst)]
+    return (sub.pivot_table(index="institution", columns="industry",
+                            values="code", aggfunc="count", fill_value=0)
+              .reset_index())
