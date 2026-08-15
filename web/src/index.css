@@ -1,0 +1,31 @@
+@import "tailwindcss";
+
+/* 投研界面以数据密度为先：暗色背景 + 高对比数字，长时间盯盘不易疲劳 */
+@theme {
+  --color-bg: oklch(0.16 0.01 260);
+  --color-surface: oklch(0.21 0.012 260);
+  --color-border: oklch(0.3 0.015 260);
+  --color-fg: oklch(0.92 0.005 260);
+  --color-muted: oklch(0.62 0.01 260);
+
+  /* A 股配色：红涨绿跌，与国际相反。切勿套用国际惯例 */
+  --color-up: oklch(0.62 0.2 25);
+  --color-down: oklch(0.68 0.16 155);
+
+  --color-p0: oklch(0.6 0.22 25);
+  --color-p1: oklch(0.72 0.16 65);
+  --color-p2: oklch(0.65 0.12 250);
+
+  --font-mono: "JetBrains Mono", "SF Mono", ui-monospace, monospace;
+}
+
+html, body, #root { height: 100%; }
+
+body {
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-feature-settings: "tnum";  /* 等宽数字，表格里数字列才对得齐 */
+}
+
+/* 财务数字统一等宽，避免跳动 */
+.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
