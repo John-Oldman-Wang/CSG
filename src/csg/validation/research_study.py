@@ -368,6 +368,8 @@ def run_full_study(
     判定标准：**同一效应须在两期同向**，仅在发现期成立者视为噪音。
     """
     out: dict[str, pd.DataFrame] = {}
+    inst_tables: dict[str, pd.DataFrame] = {}
+
     for label, period in [("发现期", IN_SAMPLE), ("验证期", OUT_SAMPLE)]:
         oc = report_outcomes(db, period, horizons=horizons)
         if oc.empty:
@@ -378,4 +380,109 @@ def run_full_study(
         out[f"{label}_发布前走势"] = by_prior_trend(oc, horizons)
         out[f"{label}_覆盖密度"] = by_coverage_density(oc, horizons)
         out[f"{label}_首次覆盖"] = by_first_coverage(oc, horizons)
+
+        inst = by_institution(oc, horizons=horizons)
+        inst_tables[label] = inst
+        if not inst.empty:
+            out[f"{label}_机构"] = inst
+
+    # 机构排名的跨期稳定性 —— 比排名本身重要得多。
+    # 若排名不可复现，任何「XX 证券最准」都只是对历史噪音的精确描述。
+    if len(inst_tables) == 2:
+        stability = institution_rank_stability(
+            inst_tables.get("发现期", pd.DataFrame()),
+            inst_tables.get("验证期", pd.DataFrame()))
+        out["全期_机构排名稳定性"] = pd.DataFrame([
+            {"检验项": k, "结果": v} for k, v in stability.items()])
+
     return out
+
+
+# ----------------------------------------------------------------------
+# 机构维度 —— 最容易过拟合，故附带稳定性检验
+# ----------------------------------------------------------------------
+
+def by_institution(
+    df: pd.DataFrame,
+    *,
+    min_samples: int = 30,
+    horizons: tuple[int, ...] = DEFAULT_HORIZONS,
+) -> pd.DataFrame:
+    """按机构汇总表现。
+
+    ⚠️ **本视角最容易过拟合**：数百家机构 × 8 年，总有几家看起来神准，
+    那大概率是随机波动。因此：
+    - 强制最小样本数（默认 30 条），样本不足者直接剔除
+    - 必须配合 institution_rank_stability 检验排名的跨期稳定性
+    - 单看本表得出的「XX 证券最准」结论**不可采信**
+    """
+    if df.empty or "institution" not in df.columns:
+        return pd.DataFrame()
+
+    rows = []
+    for inst, grp in df.groupby("institution"):
+        if len(grp) < min_samples:
+            continue
+        rows.append({"机构": inst, **_agg(grp, horizons)})
+
+    if not rows:
+        return pd.DataFrame()
+    out = pd.DataFrame(rows)
+    sort_col = f"超额{horizons[1]}日" if f"超额{horizons[1]}日" in out.columns else "样本数"
+    return out.sort_values(sort_col, ascending=False).reset_index(drop=True)
+
+
+def institution_rank_stability(
+    in_sample: pd.DataFrame,
+    out_sample: pd.DataFrame,
+    *,
+    metric: str = "超额60日",
+) -> dict:
+    """机构排名的跨期稳定性 —— 判断「哪家准」是真规律还是噪音。
+
+    做法：取两期都有足够样本的机构，计算发现期排名与验证期排名的
+    Spearman 秩相关系数。
+
+        相关系数 ≈ 0   → 排名不可复现，机构维度纯属噪音，应弃用
+        相关系数 显著为正 → 存在一定持续性，可谨慎作为参考权重
+
+    **这个检验比排名本身重要得多。** 没有它，任何排行榜都只是
+    对历史噪音的精确描述。
+    """
+    if in_sample.empty or out_sample.empty:
+        return {"结论": "样本不足，无法检验"}
+    if metric not in in_sample.columns or metric not in out_sample.columns:
+        return {"结论": f"缺少指标 {metric}"}
+
+    merged = in_sample[["机构", metric, "样本数"]].merge(
+        out_sample[["机构", metric, "样本数"]],
+        on="机构", suffixes=("_发现期", "_验证期"))
+
+    if len(merged) < 5:
+        return {"共同机构数": len(merged), "结论": "共同机构过少，无法检验"}
+
+    rho = merged[f"{metric}_发现期"].corr(
+        merged[f"{metric}_验证期"], method="spearman")
+
+    # 发现期前 1/3 的机构，在验证期是否仍处于前 1/3
+    n_top = max(1, len(merged) // 3)
+    top_in = set(merged.nlargest(n_top, f"{metric}_发现期")["机构"])
+    top_out = set(merged.nlargest(n_top, f"{metric}_验证期")["机构"])
+    overlap = len(top_in & top_out) / n_top
+
+    if pd.isna(rho):
+        verdict = "无法计算"
+    elif abs(rho) < 0.15:
+        verdict = "❌ 排名不可复现，机构维度是噪音，不应作为参考权重"
+    elif rho > 0.15:
+        verdict = "⚠️ 存在弱持续性，可谨慎参考，但不足以单独作为决策依据"
+    else:
+        verdict = "❌ 呈负相关，更应警惕（可能是均值回归）"
+
+    return {
+        "共同机构数": len(merged),
+        "秩相关系数": None if pd.isna(rho) else round(float(rho), 3),
+        "发现期前1/3在验证期仍居前1/3的比例": round(overlap, 3),
+        "随机基准": round(1 / 3, 3),
+        "结论": verdict,
+    }
