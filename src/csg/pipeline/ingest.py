@@ -21,6 +21,7 @@ from collections.abc import Iterable, Sequence
 import pandas as pd
 
 from csg.sources import akshare_source as aks
+from csg.sources import baostock_source as bss
 from csg.storage import Database
 
 log = logging.getLogger(__name__)
@@ -92,10 +93,19 @@ class Ingestor:
         start: dt.date = DEFAULT_START,
         end: dt.date | None = None,
         force: bool = False,
+        source: str = "auto",
     ) -> dict[str, int]:
         """逐只采集日线。
 
         水位粒度为单只股票，因此中断后重跑只补未完成的部分。
+
+        `source`：auto 优先 akshare（东财），失败自动切 baostock。
+        东财在请求量偏大后会限流封禁，实测行情接口可连续全部失败；
+        baostock 非爬虫架构，不受其影响。
+
+        ⚠️ 两源复权算法不完全一致，**同一只股票不应混用**，
+        否则会在拼接处产生虚假价格跳变。因此按股票整体选源，
+        一旦某只切到 baostock，其全部历史都由 baostock 提供。
         """
         end = end or dt.date.today()
         stats = {"ok": 0, "skipped": 0, "failed": 0, "rows": 0}
@@ -111,7 +121,7 @@ class Ingestor:
                 fetch_start = max(start, wm - dt.timedelta(days=1))
 
             try:
-                df = aks.fetch_daily_quote(code, fetch_start, end)
+                df = self._fetch_quote(code, fetch_start, end, source)
                 if df.empty:
                     # 空返回可能是尚未上市或长期停牌，属正常
                     self.db.set_watermark("daily_quote", code,
@@ -137,6 +147,21 @@ class Ingestor:
                 log.info("行情进度 %d/%d %s", i, len(codes), stats)
 
         return stats
+
+    def _fetch_quote(
+        self, code: str, start: dt.date, end: dt.date, source: str
+    ) -> pd.DataFrame:
+        """按 source 策略取行情。auto 模式下东财失败即切 baostock。"""
+        if source == "baostock":
+            return bss.fetch_daily_quote(code, start, end)
+        if source == "akshare":
+            return aks.fetch_daily_quote(code, start, end)
+
+        try:
+            return aks.fetch_daily_quote(code, start, end)
+        except Exception as exc:  # noqa: BLE001
+            log.info("%s 东财失败(%s)，切换 baostock", code, type(exc).__name__)
+            return bss.fetch_daily_quote(code, start, end)
 
     # ------------------------------------------------------------------
     # 财务
