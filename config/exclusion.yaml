@@ -1,0 +1,66 @@
+# 排除层规则（L2）
+#
+# 用法见 docs/METHODOLOGY.md ① 排除环节：先减法再加法。
+# 先把不该看的砍掉再筛选，顺序反了会浪费大量精力在垃圾股上。
+#
+# ⚠️ 下列阈值为**初始经验值，尚未经历史验证**。
+#    验证① 的产出就是用历史暴雷样本回测这些阈值，
+#    并按「提前预警天数 / 误报率」调整。调整须留 git 记录。
+
+hard_exclusion:
+  exclude_st: true              # ST / *ST / 退市风险警示
+  min_list_days: 365            # 上市不满一年：财报历史不足
+  min_market_cap: 3.0e+9        # 市值下限 30 亿
+
+financial_flags:
+
+  # 现金流背离 —— 单项最重要的红旗
+  # 利润可以调节，现金难以长期伪造。营收利润增长而经营现金流跟不上，
+  # 是收入确认激进或应收失控的直接信号。
+  cfo_divergence:
+    enabled: true
+    severity: high
+    threshold: 0.5              # 经营现金流 / 净利润 低于此值
+    consecutive_periods: 4      # 需连续命中的期数，避免单季波动误报
+
+  # 应收账款增速远超营收 —— AI / 软件板块暴雷高发模式
+  ar_outpacing_revenue:
+    enabled: true
+    severity: high
+    excess_growth: 0.30         # 应收同比 − 营收同比 超过 30 个百分点
+    min_ar_to_revenue: 0.25     # 且应收占营收比重达到此值才计
+
+  # 商誉减值风险 —— 并购形成的商誉是利润的定时炸弹
+  goodwill_risk:
+    enabled: true
+    severity: medium
+    goodwill_to_equity: 0.30    # 商誉 / 归母净资产
+
+  # 存货异常 —— 周期行业（新能源）的关键信号
+  # 价格下行期存货占比抬升，往往预示后续大额跌价准备
+  inventory_buildup:
+    enabled: true
+    severity: medium
+    inv_to_revenue: 0.40
+    yoy_increase: 0.30          # 且同比上升幅度
+
+  # 债务压力
+  high_leverage:
+    enabled: true
+    severity: medium
+    debt_ratio: 0.70
+
+  # 扩产激进 —— 周期行业专用
+  # 全行业同步扩产是产能过剩与价格战的前兆
+  aggressive_capex:
+    enabled: true
+    severity: low               # 单独出现不算问题，需结合行业景气度判断
+    capex_to_revenue: 0.35
+    cip_to_fixed: 0.50
+
+# 治理红旗：需要公告与股东数据支持，P3 阶段接入
+governance_flags:
+  enabled: false
+  pledge_ratio: 0.60            # 大股东质押比例
+  audit_opinion_nonstandard: true
+  frequent_auditor_change: true
