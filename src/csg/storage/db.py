@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as dt
 from collections.abc import Iterable, Sequence
 from pathlib import Path
+from typing import Self
 
 import duckdb
 import pandas as pd
@@ -62,7 +63,7 @@ class Database:
     def close(self) -> None:
         self.conn.close()
 
-    def __enter__(self) -> Database:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *exc: object) -> None:

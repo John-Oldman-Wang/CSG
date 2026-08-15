@@ -19,11 +19,11 @@ from rich.table import Table
 
 warnings.filterwarnings("ignore")
 
-from csg import universe  # noqa: E402
-from csg.analysis import flags, metrics  # noqa: E402
-from csg.pipeline import Ingestor  # noqa: E402
-from csg.cli_events import events_app  # noqa: E402
-from csg.storage import open_db  # noqa: E402
+from csg import universe
+from csg.analysis import flags, metrics
+from csg.cli_events import events_app
+from csg.pipeline import Ingestor
+from csg.storage import open_db
 
 app = typer.Typer(help="CSG 个人 A 股投研系统", no_args_is_help=True)
 sync_app = typer.Typer(help="数据采集（幂等，可中断续传）", no_args_is_help=True)

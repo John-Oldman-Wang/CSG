@@ -17,7 +17,6 @@ import random
 import socket
 import time
 from collections.abc import Callable, Sequence
-from typing import TypeVar
 
 import pandas as pd
 
@@ -70,8 +69,6 @@ def _install_request_timeout(timeout: float = REQUEST_TIMEOUT) -> None:
 
 
 _install_request_timeout()
-
-T = TypeVar("T")
 
 # 网络类异常统称。akshare 会把底层异常原样抛出，类型繁杂，
 # 因此按异常名匹配而非类型匹配。
@@ -151,7 +148,7 @@ class RateLimiter:
 _limiter = RateLimiter()
 
 
-def call(
+def call[T](
     fn: Callable[..., T],
     *args,
     retries: int = 4,
@@ -173,7 +170,7 @@ def call(
             result = fn(*args, **kwargs)
             lim.record_success()
             return result
-        except Exception as exc:  # noqa: BLE001 — 需按异常名分流
+        except Exception as exc:
             if not _is_retryable(exc):
                 raise
             last_exc = exc

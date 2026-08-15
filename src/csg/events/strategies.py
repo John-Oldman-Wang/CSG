@@ -24,6 +24,7 @@ import hashlib
 import json
 import logging
 from dataclasses import dataclass, field
+from typing import ClassVar
 
 import pandas as pd
 
@@ -219,7 +220,7 @@ class StrategyEngine:
 
     # ------------------------------------------------------------------
 
-    _HANDLERS = {
+    _HANDLERS: ClassVar[dict[str, str]] = {
         "research_downgrade": "on_research_downgrade",
         "report_disclosed": "on_report_disclosed",
         "excess_drawdown": "on_excess_drawdown",

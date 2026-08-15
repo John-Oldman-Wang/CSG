@@ -131,9 +131,13 @@ def pe_percentile_vs_forward_return(
     )["n"].iloc[0]
     if have_mv == 0:
         return pd.DataFrame({
-            "说明": ["缺少市值数据：daily_basic 表为空。"
-                     "需先补充市值采集（akshare 无稳定的历史 PE 批量接口，"
-                     "计划由 tushare daily_basic 提供，待积分到位）"]
+            "说明": [
+                (
+                    "缺少市值数据：daily_basic 表为空。需先补充市值采集"
+                    "（akshare 无稳定的历史 PE 批量接口，"
+                    "计划由 tushare daily_basic 提供，待积分到位）"
+                )
+            ]
         })
 
     rows: list[dict] = []
