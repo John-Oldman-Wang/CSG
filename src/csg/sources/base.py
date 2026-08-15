@@ -24,19 +24,52 @@ import pandas as pd
 log = logging.getLogger(__name__)
 
 # ----------------------------------------------------------------------
-# 全局 socket 超时 —— 防止请求无限挂起
+# 强制请求超时 —— 防止无限挂起
 # ----------------------------------------------------------------------
 #
-# 实测教训：一次研报采集在 375/604 处挂死，进程存活但两小时仅消耗
-# 21 秒 CPU。akshare 部分接口未设 timeout，底层 socket 会无限等待。
+# 实测教训（两次）：研报采集分别在 375/604 与刚启动处挂死，
+# 进程存活、TCP 连接 ESTABLISHED，但 85 分钟仅消耗 3 秒 CPU，
+# 日志停更且无任何报错。即服务器接受连接后不返回数据。
 #
-# 重试逻辑对此**无效**——它只能捕获抛出的异常，无法处理「永不返回」。
-# 这正是架构文档所述的「静默失效」：系统看起来在跑，实际早已停止且不报错。
+# 重试逻辑对此**完全无效**——它只能捕获抛出的异常，无法处理「永不返回」。
+# 这正是 ARCHITECTURE.md 4.3 所述的静默失效。
 #
-# socket.setdefaulttimeout 影响本进程所有 socket 操作，
-# 使挂起转化为可捕获的异常，重试与熔断机制才能真正生效。
-SOCKET_TIMEOUT = 45.0
-socket.setdefaulttimeout(SOCKET_TIMEOUT)
+# ⚠️ 关键：`socket.setdefaulttimeout()` 解决不了这个问题。
+#    urllib3 建立连接后会显式调用 `sock.settimeout(<requests 的 timeout>)`，
+#    覆盖全局默认值；而 akshare 传入的 timeout 为 None，
+#    等同于把 socket 重设为永久阻塞模式。
+#    因此必须在 requests 层拦截，把 None 替换为有限值。
+REQUEST_TIMEOUT = 30.0
+
+socket.setdefaulttimeout(REQUEST_TIMEOUT)  # 兜底：覆盖非 requests 的直连
+
+
+def _install_request_timeout(timeout: float = REQUEST_TIMEOUT) -> None:
+    """给所有 requests 调用强制注入超时。
+
+    覆盖 `timeout=None`（而非仅 setdefault）—— akshare 正是显式传 None。
+    requests.get/post 内部均经由 Session.request，故只需拦截此处。
+    """
+    try:
+        import requests
+    except ImportError:  # pragma: no cover
+        return
+
+    original = requests.Session.request
+    if getattr(original, "_csg_timeout_patched", False):
+        return
+
+    def patched(self, *args, **kwargs):
+        if kwargs.get("timeout") is None:
+            kwargs["timeout"] = timeout
+        return original(self, *args, **kwargs)
+
+    patched._csg_timeout_patched = True  # type: ignore[attr-defined]
+    requests.Session.request = patched  # type: ignore[method-assign]
+    log.debug("已注入 requests 强制超时 %.0fs", timeout)
+
+
+_install_request_timeout()
 
 T = TypeVar("T")
 
