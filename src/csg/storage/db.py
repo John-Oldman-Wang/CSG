@@ -14,7 +14,10 @@ from pathlib import Path
 import duckdb
 import pandas as pd
 
-SCHEMA_PATH = Path(__file__).parent / "schema.sql"
+SCHEMA_PATHS = (
+    Path(__file__).parent / "schema.sql",         # 数据层
+    Path(__file__).parent / "schema_events.sql",  # 事件层 + 验证结果
+)
 DEFAULT_DB = Path("data/csg.duckdb")
 
 # 8 GB 物理内存：留给 macOS 与 pandas，DuckDB 上限设 4 GB，超出部分溢写磁盘。
@@ -52,7 +55,9 @@ class Database:
     # ------------------------------------------------------------------
 
     def init_schema(self) -> None:
-        self.conn.execute(SCHEMA_PATH.read_text(encoding="utf-8"))
+        for path in SCHEMA_PATHS:
+            if path.exists():
+                self.conn.execute(path.read_text(encoding="utf-8"))
 
     def close(self) -> None:
         self.conn.close()
