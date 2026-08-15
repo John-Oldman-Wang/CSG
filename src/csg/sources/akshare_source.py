@@ -276,6 +276,21 @@ def fetch_financial(code: str, statement: Statement) -> pd.DataFrame:
     if statement == "cashflow" and {"n_cashflow_act", "c_pay_acq_const"} <= set(out.columns):
         out["free_cashflow"] = out["n_cashflow_act"] - out["c_pay_acq_const"].fillna(0)
 
+    # 全部数值列强制 float64，与 schema 的 DOUBLE 严格对齐。
+    #
+    # ⚠️ 不可省。pandas 会按实际值推断类型：某些股票的 share_capital
+    # 恰好全是整数且无缺失，被推断为 int64，写入 DOUBLE 字段时
+    # DuckDB 的隐式转换使数据块布局与主键索引预期不符，触发
+    #     Invalid Input Error: Failed to delete all rows from index
+    # 且该错误是 FatalException——会使整个数据库连接失效，
+    # 导致后续所有写入（含失败水位记录）一并失败，采集整轮中断。
+    #
+    # 实测由 002150 暴露：其股本值均为整数，故独此一只推断成 int64。
+    numeric_cols = [c for c in out.columns
+                    if c not in ("code", "report_period", "disclosure_date")]
+    for col in numeric_cols:
+        out[col] = pd.to_numeric(out[col], errors="coerce").astype("float64")
+
     return out.reset_index(drop=True)
 
 

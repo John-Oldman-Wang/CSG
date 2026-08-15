@@ -81,20 +81,32 @@ class Database:
 
         幂等要求（见 ARCHITECTURE.md 4.3）：重复写入同一批数据不产生重复行，
         因此采集任务可以安全重跑，中断后从水位继续即可。
+
+        ⚠️ 实现必须用 `INSERT OR REPLACE`，不可用 `DELETE ... USING` + `INSERT`。
+        后者在带主键索引的表上会失败，实测报错：
+
+            Invalid Input Error: Failed to delete all rows from index.
+            Only deleted 0 out of 82 rows.
+
+        该错误在采集途中抛出会直接终止整轮任务（曾因此中断一次财务采集）。
+        `INSERT OR REPLACE` 由 DuckDB 依主键约束原生处理冲突，既正确又更快。
+
+        `keys` 参数保留用于表达调用方意图并校验主键存在，实际冲突判定
+        由表上的 PRIMARY KEY 约束完成。
         """
         if df.empty:
             return 0
 
-        cols = list(df.columns)
+        missing = [k for k in keys if k not in df.columns]
+        if missing:
+            raise ValueError(f"{table} 缺少主键列: {missing}")
+
+        cols = ", ".join(df.columns)
         self.conn.register("_incoming", df)
         try:
-            key_match = " AND ".join(f"t.{k} = s.{k}" for k in keys)
             self.conn.execute(
-                f"DELETE FROM {table} t USING _incoming s WHERE {key_match}"
-            )
-            self.conn.execute(
-                f"INSERT INTO {table} ({', '.join(cols)}) "
-                f"SELECT {', '.join(cols)} FROM _incoming"
+                f"INSERT OR REPLACE INTO {table} ({cols}) "
+                f"SELECT {cols} FROM _incoming"
             )
         finally:
             self.conn.unregister("_incoming")
