@@ -6,7 +6,7 @@ import {
   type IChartApi,
   type UTCTimestamp,
 } from "lightweight-charts";
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Candle } from "@/types";
 
 /**
@@ -38,6 +38,18 @@ export default function CandleChart({
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
+  // 悬停的那根 K 线。null 表示鼠标移出图表区域，此时显示最后一根。
+  const [hover, setHover] = useState<Candle | null>(null);
+
+  // 时间戳 → 原始数据行。crosshair 事件只给时间，需回查完整字段
+  // （尤其 pct_chg 与成交量，图表本身不持有）。
+  const byTime = useMemo(() => {
+    const m = new Map<number, Candle>();
+    for (const d of data) {
+      m.set(new Date(`${d.time.slice(0, 10)}T00:00:00Z`).getTime() / 1000, d);
+    }
+    return m;
+  }, [data]);
 
   useEffect(() => {
     if (!ref.current || data.length === 0) return;
@@ -122,6 +134,11 @@ export default function CandleChart({
       });
     }
 
+    chart.subscribeCrosshairMove((param) => {
+      const t = param.time as number | undefined;
+      setHover(t ? (byTime.get(t) ?? null) : null);
+    });
+
     chart.timeScale().fitContent();
 
     const ro = new ResizeObserver(([entry]) => {
@@ -134,7 +151,7 @@ export default function CandleChart({
       chart.remove();
       chartRef.current = null;
     };
-  }, [data, height, markers, priceLines]);
+  }, [data, height, markers, priceLines, byTime]);
 
   if (data.length === 0) {
     return (
@@ -147,5 +164,29 @@ export default function CandleChart({
     );
   }
 
-  return <div ref={ref} style={{ height }} />;
+  // 未悬停时显示最后一根，避免信息条空白跳动
+  const shown = hover ?? data[data.length - 1];
+  const rising = (shown?.pct_chg ?? 0) >= 0;
+
+  return (
+    <div>
+      {shown && (
+        <div className="mb-1 flex flex-wrap items-baseline gap-x-4 gap-y-1 font-mono text-xs tabular-nums">
+          <span className="text-[var(--color-muted)]">{shown.time.slice(0, 10)}</span>
+          <span style={{ color: rising ? UP : DOWN }}>
+            开 {shown.open?.toFixed(2)}　高 {shown.high?.toFixed(2)}　 低{" "}
+            {shown.low?.toFixed(2)}　收 {shown.close?.toFixed(2)}
+          </span>
+          <span style={{ color: rising ? UP : DOWN }}>
+            {rising ? "+" : ""}
+            {shown.pct_chg?.toFixed(2)}%
+          </span>
+          <span className="text-[var(--color-muted)]">
+            量 {(shown.volume / 1e4).toFixed(0)} 万手
+          </span>
+        </div>
+      )}
+      <div ref={ref} style={{ height }} />
+    </div>
+  );
 }

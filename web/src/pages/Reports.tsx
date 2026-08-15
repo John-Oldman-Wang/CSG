@@ -67,7 +67,7 @@ export default function Reports() {
       {
         field: "publish_date",
         headerName: "发布日期",
-        width: 110,
+        width: 125,
         valueFormatter: (p: ValueFormatterParams) => String(p.value ?? "").slice(0, 10),
         cellClass: "num",
       },
