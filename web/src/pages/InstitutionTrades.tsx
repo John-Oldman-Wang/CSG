@@ -10,6 +10,7 @@ import ReactECharts from "echarts-for-react";
 import { useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api, DataLockedError } from "@/api/client";
+import { InstitutionCurves } from "@/components/InstitutionCurves";
 import { InstitutionPnlSlope } from "@/components/InstitutionPnlSlope";
 import { Card, CardTitle, DataLocked, Empty } from "@/components/ui/primitives";
 import { useTheme } from "@/lib/theme";
@@ -224,6 +225,8 @@ export default function InstitutionTrades() {
 
   return (
     <div className="space-y-4">
+      <InstitutionCurves onPick={(i) => set("inst", i)} />
+
       <InstitutionPnlSlope />
 
       <Card>
@@ -282,7 +285,7 @@ export default function InstitutionTrades() {
 
         {s && (
           <>
-            <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4 lg:grid-cols-7">
+            <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4 lg:grid-cols-5">
               <Stat label="笔数" value={String(s.笔数)} />
               <Stat
                 label="总盈亏"
@@ -290,9 +293,21 @@ export default function InstitutionTrades() {
                 cls={trendClass(s.总盈亏)}
               />
               <Stat
-                label="总投入"
-                value={`${(s.总投入 / 10000).toFixed(0)} 万`}
-                hint="每份研报 1 万 × 笔数。这是度量标尺，不是可执行的策略"
+                label="占用资金"
+                value={`${(s.占用资金 / 10000).toFixed(0)} 万`}
+                hint={`峰值同时持有 ${s.峰值并发} 笔 × 1 万。持有期满卖出后资金回笼，下一笔用的是同一笔钱——不是「1 万 × ${s.笔数} 笔」。平均并发 ${s.平均并发}，资金周转 ${s.周转次数 ?? "—"} 次`}
+              />
+              <Stat
+                label="年化收益"
+                value={s.年化收益率 != null ? pct(s.年化收益率, 2) : "—"}
+                cls={trendClass(s.年化收益率 ?? 0)}
+                hint={`累计 ${s.累计收益率 != null ? pct(s.累计收益率, 1) : "—"} / ${s.年数} 年。这是绝对收益，含市场 beta`}
+              />
+              <Stat
+                label="最大回撤"
+                value={pct(s.最大回撤, 1)}
+                cls="text-[var(--color-down)]"
+                hint="累计盈亏曲线的最大回落，除以占用资金"
               />
               <Stat
                 label="胜率"
@@ -324,6 +339,12 @@ export default function InstitutionTrades() {
                 <b>超过一半的研报是亏的</b>，全部利润来自少数大赢家。
                 这意味着按这家机构的研报逐份买入，最可能的单次结果是亏损——
                 只有在能承受长尾、且每一份都买的前提下，总账才为正。
+              </p>
+            )}
+            {s.涨停顺延笔数 > 0 && (
+              <p className="mt-1 text-[var(--color-muted)] text-xs">
+                {s.涨停顺延笔数} 笔因次日开盘涨停而顺延到之后的交易日买入——
+                开盘即涨停时买单排不进去，用那个价格成交是虚构的收益。
               </p>
             )}
             {s.含除权笔数 > 0 && (

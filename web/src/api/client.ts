@@ -5,6 +5,7 @@ import type {
   FinancialPeriod,
   HealthInfo,
   Institution,
+  InstitutionCurvesResp,
   InstitutionOption,
   InstitutionPnlResp,
   InstitutionStats,
@@ -153,6 +154,13 @@ export const api = {
       horizon,
       capital,
       min_samples: minSamples,
+    }),
+
+  institutionCurves: (horizon = 20, capital = 10000, minTrades = 100) =>
+    get<InstitutionCurvesResp>("/institution-curves", {
+      horizon,
+      capital,
+      min_trades: minTrades,
     }),
 
   institutionOptions: (minReports = 30) =>

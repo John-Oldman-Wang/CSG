@@ -1478,88 +1478,362 @@ def institution_pnl(
     }
 
 
+# ======================================================================
+# 「跟着研报买」的入场规则
+# ======================================================================
+#
+# 研报发布**次日开盘价**买入，持有 N 个交易日后按收盘价卖出。
+#
+# 三条规则各自对应一个会让回测虚高的陷阱：
+#
+# ① **发布当日不买。** 当日收盘价里已经包含研报的影响，
+#    用它买入等于假设你能在研报公开前拿到。
+#
+# ② **开盘涨停则顺延至下一交易日。** 开盘即涨停时买单排不进去，
+#    用那个价格成交是虚构的收益。涨停幅度按板块与日期区分：
+#      科创板 688      20%
+#      创业板 300      20%（2020-08-24 起，此前 10%）
+#      北交所 4/8 开头  30%
+#      其余主板        10%
+#    ⚠️ **ST 股的 5% 限制未处理**——`stock_basic.name` 只有当前名称，
+#    没有历史 ST 状态。这会让个别 ST 股在实际涨停时被判为可买，
+#    方向是**高估**收益。已知偏差，记录在此。
+#
+# ③ **连续涨停超过 5 个交易日则放弃该笔。** 你确实买不进去，
+#    记为未成交而非按第 6 天的价格成交。实测 18147 份研报中
+#    仅 7 笔属此情况。
+#
+# 卖出侧的跌停限制**未建模**：极端行情下当日可能无法卖出。
+# 该偏差同样是高估方向，但影响远小于买入侧（卖出可分多日完成）。
+ENTRY_CTE = """
+WITH q AS (
+    SELECT code, trade_date, open, close, adj_factor,
+           lag(close) OVER (PARTITION BY code ORDER BY trade_date) AS prev_close,
+           row_number() OVER (PARTITION BY code ORDER BY trade_date) AS rn
+    FROM daily_quote
+    WHERE close IS NOT NULL AND open IS NOT NULL
+      AND adj_factor IS NOT NULL AND close > 0
+),
+lim AS (
+    SELECT *,
+           CASE
+               WHEN code LIKE '688%' THEN 0.20
+               WHEN code LIKE '300%' AND trade_date >= DATE '2020-08-24' THEN 0.20
+               WHEN code LIKE '8%' OR code LIKE '4%' THEN 0.30
+               ELSE 0.10
+           END AS lim_pct
+    FROM q
+),
+buyable AS (
+    SELECT *,
+           prev_close IS NOT NULL
+             AND open < round(prev_close * (1 + lim_pct), 2) - 0.005 AS can_buy
+    FROM lim
+),
+mx AS (SELECT code, max(rn) AS last_rn FROM q GROUP BY code),
+cand AS (
+    SELECT r.code, r.publish_date, r.institution, r.title, r.rating,
+           b.rn, b.trade_date, b.open, b.adj_factor, b.can_buy,
+           row_number() OVER (
+               PARTITION BY r.code, r.publish_date, r.institution, r.title
+               ORDER BY b.trade_date
+           ) AS seq
+    FROM research_report r
+    JOIN buyable b ON b.code = r.code AND b.trade_date > r.publish_date
+    WHERE r.rating IS NOT NULL AND r.rating <> ''
+),
+picked AS (
+    SELECT *,
+           min(CASE WHEN can_buy THEN seq END) OVER (
+               PARTITION BY code, publish_date, institution, title
+           ) AS ok_seq
+    FROM cand WHERE seq <= 6
+),
+entry AS (
+    SELECT code, publish_date, institution, title, rating,
+           rn AS ern, trade_date AS buy_date, open AS buy_px,
+           -- 开盘价的后复权值：因子按日给定，开盘与收盘同因子
+           open * adj_factor AS buy_adj,
+           seq - 1 AS deferred
+    FROM picked WHERE seq = ok_seq
+)
+"""
+
+
+@app.get("/api/institution-curves")
+def institution_curves(
+    horizon: int = 20,
+    capital: float = 10000,
+    min_trades: int = 100,
+) -> dict:
+    """按机构聚合的资金曲线 —— 「跟着这家机构的每一份研报买」的结果。
+
+    每份研报投入 `capital` 元，按 ENTRY_CTE 的规则入场，
+    持有 `horizon` 个交易日后按收盘价卖出。曲线按**月**聚合累计盈亏。
+
+    **曲线的斜率才是信息，终点高度不是。** 发研报多的机构投入也多，
+    终点自然更高；同时给出「累计收益率 = 累计盈亏 ÷ 累计投入」，
+    那个才可跨机构比较。
+    """
+    with read_db() as db:
+        trades = db.query(
+            ENTRY_CTE + """
+            SELECT e.institution AS 机构,
+                   e.publish_date,
+                   e.buy_date  AS 买入日,
+                   x.trade_date AS 卖出日,
+                   (x.close * x.adj_factor / e.buy_adj) - 1 AS ret,
+                   e.deferred
+            FROM entry e
+            JOIN mx ON mx.code = e.code
+            JOIN q x ON x.code = e.code AND x.rn = e.ern + ?
+            WHERE e.ern + ? <= mx.last_rn
+            """, [horizon, horizon])
+
+    if trades.empty:
+        return {"horizon": horizon, "capital": capital, "institutions": []}
+
+    trades["月"] = pd.to_datetime(trades["publish_date"]).dt.to_period("M").astype(str)
+    trades["盈亏"] = trades["ret"] * capital
+
+    out = []
+    for inst, g in trades.groupby("机构"):
+        if len(g) < min_trades:
+            continue
+        m = (g.groupby("月")
+               .agg(笔数=("ret", "size"), 盈亏=("盈亏", "sum"))
+               .reset_index().sort_values("月"))
+        m["累计盈亏"] = m["盈亏"].cumsum().round(0)
+        m["累计笔数"] = m["笔数"].cumsum()
+        m["累计投入"] = m["累计笔数"] * capital
+        m["累计收益率"] = m["累计盈亏"] / m["累计投入"]
+
+        use = _capital_usage(g["买入日"], g["卖出日"], capital)
+        m["累计收益率"] = m["累计盈亏"] / use["占用资金"]
+
+        ret = g["ret"]
+        wins = int((ret > 0).sum())
+        out.append({
+            "机构": inst,
+            "笔数": len(g),
+            "总盈亏": float(g["盈亏"].sum()),
+            "占用资金": use["占用资金"],
+            "峰值并发": use["峰值并发"],
+            "平均并发": use["平均并发"],
+            "周转次数": use["周转次数"],
+            # 收益率以**峰值占用资金**为分母：那才是你真正要准备的钱
+            "累计收益率": float(g["盈亏"].sum() / use["占用资金"]),
+            "年数": use["年数"],
+            "年化收益率": _annualized(float(g["盈亏"].sum() / use["占用资金"]), use["年数"]),
+            "胜率": wins / len(g),
+            "平均收益率": float(ret.mean()),
+            "中位收益率": float(ret.median()),
+            "盈亏比": (float(ret[ret > 0].mean() / abs(ret[ret < 0].mean()))
+                       if (ret < 0).any() and (ret > 0).any() else None),
+            "涨停顺延笔数": int((g["deferred"] > 0).sum()),
+            "最大回撤": _max_drawdown(m["累计盈亏"].to_numpy(), use["占用资金"]),
+            "曲线": _records(m[["月", "累计盈亏", "累计收益率", "累计笔数"]]),
+        })
+
+    out.sort(key=lambda x: x["年化收益率"] or -1.0, reverse=True)
+
+    # 基准线：不挑机构，**每一份研报都买**。
+    #
+    # 缺了它这张图会误导：2017–2026 市场整体上行，绝对收益人人为正，
+    # 25 家里 23 家赚钱看起来像「研报普遍有用」。真正的问题是
+    # 「挑这家」比「谁的都买」好多少——若各家曲线都贴着基准，
+    # 那么挑机构这个动作本身没有创造任何东西。
+    bm = (trades.groupby("月")
+                .agg(笔数=("ret", "size"), 盈亏=("盈亏", "sum"))
+                .reset_index().sort_values("月"))
+    bm["累计盈亏"] = bm["盈亏"].cumsum().round(0)
+    bm["累计笔数"] = bm["笔数"].cumsum()
+    buse = _capital_usage(trades["买入日"], trades["卖出日"], capital)
+    bm["累计收益率"] = bm["累计盈亏"] / buse["占用资金"]
+    bret = trades["ret"]
+    benchmark = {
+        "机构": "全样本（每份都买）",
+        "笔数": len(trades),
+        "总盈亏": float(trades["盈亏"].sum()),
+        "占用资金": buse["占用资金"],
+        "峰值并发": buse["峰值并发"],
+        "平均并发": buse["平均并发"],
+        "周转次数": buse["周转次数"],
+        "累计收益率": float(trades["盈亏"].sum() / buse["占用资金"]),
+        "年数": buse["年数"],
+        "年化收益率": _annualized(float(trades["盈亏"].sum() / buse["占用资金"]), buse["年数"]),
+        "胜率": float((bret > 0).mean()),
+        "平均收益率": float(bret.mean()),
+        "中位收益率": float(bret.median()),
+        "盈亏比": (float(bret[bret > 0].mean() / abs(bret[bret < 0].mean()))
+                   if (bret < 0).any() and (bret > 0).any() else None),
+        "涨停顺延笔数": int((trades["deferred"] > 0).sum()),
+        "最大回撤": _max_drawdown(bm["累计盈亏"].to_numpy(), buse["占用资金"]),
+        "曲线": _records(bm[["月", "累计盈亏", "累计收益率", "累计笔数"]]),
+    }
+
+    # 超过基准的家数：这个数字若接近半数，说明机构间差异与随机无异。
+    #
+    # 必须按**年化**比较，不能按累计：各家研报的时间跨度差异很大
+    # （新时代证券仅 3.9 年，东吴证券 9.6 年），累计收益率把
+    # 「九年赚 50%」与「四年赚 36%」显示成后者更差，那是错的。
+    bm_ann = benchmark["年化收益率"] or -1.0
+    beat = sum(1 for x in out if (x["年化收益率"] or -1.0) > bm_ann)
+
+    return {
+        "horizon": horizon,
+        "capital": capital,
+        "min_trades": min_trades,
+        "entry_rule": "研报发布次日开盘价买入；开盘涨停顺延，连续涨停超 5 日放弃",
+        "benchmark": benchmark,
+        "beat_benchmark": beat,
+        "institutions": out,
+    }
+
+
+def _annualized(total_return: float, years: float) -> float | None:
+    """年化收益率。
+
+    跨机构比较必须用它：各家研报的时间跨度不同，
+    累计收益率把「九年赚 50%」与「三年赚 50%」显示成同一个数。
+
+    ⚠️ 这是**绝对收益**，含市场 beta。2017–2026 A 股整体上行，
+    正的年化不代表研报有价值——须与「每份都买」的基准对比才有意义。
+    """
+    if years <= 0 or total_return <= -1:
+        return None
+    return (1 + total_return) ** (1 / years) - 1
+
+
+def _capital_usage(buys, sells, capital: float) -> dict:
+    """计算这组交易真正占用了多少本金。
+
+    **不能用「每笔 1 万 × 笔数」当投入。** 持有 20 个交易日后卖出，
+    那笔钱就回到手里，下一份研报用的是同一笔钱。按笔数累加会得出
+    东吴证券需要 2726 万本金的荒谬结论——实际同时在手的仓位远少于此。
+
+    真正要准备的钱 = **同时持仓的峰值** × 单笔金额。
+    用扫描线求任一时刻的在手笔数：买入 +1，卖出 +1 天后 −1。
+
+    另给出平均并发与周转次数：
+      周转 = 名义累计投入 ÷ 峰值占用，即这笔钱被复用了多少轮。
+    """
+    events: list[tuple[Any, int]] = []
+    for b, sl in zip(buys, sells, strict=True):
+        events.append((pd.Timestamp(b), 1))
+        # 卖出当日资金即回笼，视为该日收盘后释放
+        events.append((pd.Timestamp(sl), -1))
+    events.sort(key=lambda e: (e[0], -e[1]))
+
+    cur = peak = 0
+    # 面积法求平均并发：Σ(持仓数 × 持续天数) ÷ 总天数
+    area = 0.0
+    prev = events[0][0] if events else None
+    for t, d in events:
+        if prev is not None and t > prev:
+            area += cur * (t - prev).days
+        cur += d
+        peak = max(peak, cur)
+        prev = t
+    span = (events[-1][0] - events[0][0]).days if len(events) > 1 else 1
+
+    peak_cap = peak * capital
+    years = span / 365.25
+    nominal = len(buys) * capital
+    return {
+        "峰值并发": peak,
+        "占用资金": peak_cap,
+        "平均并发": round(area / span, 2) if span > 0 else 0.0,
+        "名义累计": nominal,
+        "周转次数": round(nominal / peak_cap, 1) if peak_cap else None,
+        "年数": round(years, 1),
+    }
+
+
+def _max_drawdown(cum: Any, total_capital: float) -> float:
+    """资金曲线的最大回撤（占总投入的比例）。
+
+    以**累计盈亏**而非净值计算：本策略的投入随研报数量增长，
+    没有固定本金，净值口径无从定义。回撤除以总投入，
+    得到「最坏时点亏掉了总投入的百分之几」。
+    """
+    if len(cum) == 0 or total_capital <= 0:
+        return 0.0
+    peak = cum[0]
+    worst = 0.0
+    for v in cum:
+        peak = max(peak, v)
+        worst = min(worst, v - peak)
+    return float(worst / total_capital)
+
+
 @app.get("/api/institution-trades")
 def institution_trades(
     institution: str,
     horizon: int = 20,
     capital: float = 10000,
-    start: str | None = None,
-    end: str | None = None,
 ) -> dict:
-    """把某机构的每一份研报当作一笔交易，逐笔列出。
+    """某机构的每一份研报作为一笔交易，逐笔列出。
 
-    规则：研报发布后**第一个交易日**按收盘价买入，持有 `horizon` 个
-    交易日后按收盘价卖出。发布当日不买——那天的收盘价里已经包含了
-    研报的影响，用它买入等于假设你能在研报公开前拿到。
+    入场规则与 `/api/institution-curves` 完全一致（见 ENTRY_CTE）：
+    发布次日开盘价买入，开盘涨停顺延，连续涨停超 5 日放弃。
+    两个接口共用同一段 SQL，避免同一页出现互相矛盾的数字。
 
-    **买入价/卖出价用原始成交价，收益率用后复权计算。** 两者口径不同
-    是刻意的：价格要与你券商 App 看到的一致，收益率必须正确处理
-    持有期内的除权除息。若持有期内发生除权，按显示价格手算的涨幅
-    会与 `收益率` 对不上——此时 `除权` 标记为真，差额即分红送转，
-    那部分钱你确实拿到了，只是不体现在价格上。
-
-    窗口未走完的研报不列入：它们尚无结果，填任何数字都是虚构。
+    **买入价/卖出价是原始成交价，收益率用后复权。** 前者要与你券商
+    App 看到的一致，后者必须正确处理持有期内的除权除息。二者对不上时
+    `除权` 为真，差额即分红送转——那部分钱确实拿到了，只是不在价格里。
     """
-    where, params = ["r.institution = ?"], [institution]
-    if start:
-        where.append("r.publish_date >= ?")
-        params.append(dt.date.fromisoformat(start))
-    if end:
-        where.append("r.publish_date <= ?")
-        params.append(dt.date.fromisoformat(end))
-    cond = " AND ".join(where)
-
     with read_db() as db:
         trades = db.query(
-            f"""
-            WITH px AS (
-                SELECT code, trade_date, close AS raw, close * adj_factor AS adj,
-                       row_number() OVER (PARTITION BY code ORDER BY trade_date) AS rn
-                FROM daily_quote
-                WHERE close IS NOT NULL AND adj_factor IS NOT NULL AND close > 0
-            ),
-            mx AS (SELECT code, max(rn) AS last_rn FROM px GROUP BY code),
-            ent AS (
-                SELECT r.code, r.publish_date, r.title, r.rating,
-                       min(px.rn) AS ern
-                FROM research_report r
-                JOIN px ON px.code = r.code AND px.trade_date > r.publish_date
-                WHERE {cond}
-                GROUP BY 1, 2, 3, 4
-            )
+            ENTRY_CTE + """
             SELECT e.publish_date        AS 发布日,
                    e.code                AS 代码,
                    b.name                AS 股票,
                    e.title               AS 标题,
                    e.rating              AS 评级,
-                   en.trade_date         AS 买入日,
-                   en.raw                AS 买入价,
-                   ex.trade_date         AS 卖出日,
-                   ex.raw                AS 卖出价,
-                   (ex.adj / en.adj) - 1 AS 收益率,
-                   ((ex.adj / en.adj) - 1) * ? AS 盈亏,
-                   -- 持有期内发生除权则显示价与复权价的涨幅不一致
-                   abs((ex.adj / en.adj) - (ex.raw / en.raw)) > 0.001 AS 除权
-            FROM ent e
+                   e.buy_date            AS 买入日,
+                   e.buy_px              AS 买入价,
+                   e.deferred            AS 顺延,
+                   x.trade_date          AS 卖出日,
+                   x.close               AS 卖出价,
+                   (x.close * x.adj_factor / e.buy_adj) - 1 AS 收益率,
+                   ((x.close * x.adj_factor / e.buy_adj) - 1) * ? AS 盈亏,
+                   abs((x.close * x.adj_factor / e.buy_adj)
+                       - (x.close / e.buy_px)) > 0.001 AS 除权
+            FROM entry e
             JOIN mx ON mx.code = e.code
-            JOIN px en ON en.code = e.code AND en.rn = e.ern
-            JOIN px ex ON ex.code = e.code AND ex.rn = e.ern + ?
+            JOIN q x ON x.code = e.code AND x.rn = e.ern + ?
             LEFT JOIN stock_basic b ON b.code = e.code
-            WHERE e.ern + ? <= mx.last_rn
+            WHERE e.institution = ? AND e.ern + ? <= mx.last_rn
             ORDER BY e.publish_date DESC
-            """,
-            [*params, capital, horizon, horizon])
+            """, [capital, horizon, institution, horizon])
 
     if trades.empty:
         return {"institution": institution, "horizon": horizon,
                 "capital": capital, "summary": None, "trades": []}
 
+    use = _capital_usage(trades["买入日"], trades["卖出日"], capital)
     ret = trades["收益率"]
     wins = int((ret > 0).sum())
+    total = float(trades["盈亏"].sum())
+
+    curve = trades.sort_values("发布日")[["发布日", "盈亏"]].copy()
+    curve["累计"] = curve["盈亏"].cumsum()
+
     summary = {
         "笔数": len(trades),
-        "总盈亏": float(trades["盈亏"].sum()),
-        "总投入": float(capital * len(trades)),
+        "总盈亏": total,
+        # ⚠️ 不是 capital × 笔数。持有期满卖出后资金回笼，
+        #    下一笔用的是同一笔钱；真正要准备的是**峰值同时持仓**。
+        "占用资金": use["占用资金"],
+        "峰值并发": use["峰值并发"],
+        "平均并发": use["平均并发"],
+        "周转次数": use["周转次数"],
+        "年数": use["年数"],
+        "累计收益率": total / use["占用资金"] if use["占用资金"] else None,
+        "年化收益率": _annualized(total / use["占用资金"], use["年数"])
+                      if use["占用资金"] else None,
+        "最大回撤": _max_drawdown(curve["累计"].to_numpy(), use["占用资金"]),
         "胜率": wins / len(trades),
         "盈利笔数": wins,
         "亏损笔数": len(trades) - wins,
@@ -1567,16 +1841,11 @@ def institution_trades(
         "中位收益率": float(ret.median()),
         "最好": float(ret.max()),
         "最差": float(ret.min()),
-        # 盈亏比：赚钱时平均赚多少 / 亏钱时平均亏多少。
-        # 胜率低但盈亏比高的组合仍可盈利，只看胜率会误判。
         "盈亏比": (float(ret[ret > 0].mean() / abs(ret[ret < 0].mean()))
                    if (ret < 0).any() and (ret > 0).any() else None),
         "含除权笔数": int(trades["除权"].sum()),
+        "涨停顺延笔数": int((trades["顺延"] > 0).sum()),
     }
-
-    # 资金曲线：按发布日正序累计
-    curve = trades.sort_values("发布日")[["发布日", "盈亏"]].copy()
-    curve["累计"] = curve["盈亏"].cumsum()
 
     return {
         "institution": institution,
@@ -1588,9 +1857,6 @@ def institution_trades(
     }
 
 
-# 路径不可用 /api/institutions —— 那个已被研报检索页占用。
-# FastAPI 按注册顺序取第一个匹配的路由，重名不会报错，
-# 只会让后注册的永远收不到请求：又一种静默失效。
 @app.get("/api/institution-options")
 def institution_options(min_reports: int = 30) -> list[dict]:
     """有足够样本的机构名单，供逐笔复盘页下拉选择。"""

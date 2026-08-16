@@ -422,7 +422,16 @@ export interface InstitutionTradesResp {
   summary: {
     笔数: number;
     总盈亏: number;
-    总投入: number;
+    /** 峰值同时持仓 × 单笔金额 —— 真正要准备的本金，非「单笔 × 笔数」 */
+    占用资金: number;
+    峰值并发: number;
+    平均并发: number;
+    周转次数: number | null;
+    年数: number;
+    累计收益率: number | null;
+    年化收益率: number | null;
+    最大回撤: number;
+    涨停顺延笔数: number;
     胜率: number;
     盈利笔数: number;
     亏损笔数: number;
@@ -443,4 +452,43 @@ export interface InstitutionOption {
   研报数: number;
   最早: string;
   最晚: string;
+}
+
+export interface CurvePoint {
+  月: string;
+  累计盈亏: number;
+  累计收益率: number;
+  累计笔数: number;
+}
+
+export interface CurveInstitution {
+  机构: string;
+  笔数: number;
+  总盈亏: number;
+  /** **峰值同时持仓 × 单笔金额** —— 你真正要准备的本金。
+   *  不是「单笔 × 笔数」：持有期结束卖出后，那笔钱回来给下一笔用。 */
+  占用资金: number;
+  峰值并发: number;
+  平均并发: number;
+  周转次数: number | null;
+  年数: number;
+  累计收益率: number;
+  年化收益率: number | null;
+  胜率: number;
+  平均收益率: number;
+  中位收益率: number;
+  盈亏比: number | null;
+  涨停顺延笔数: number;
+  最大回撤: number;
+  曲线: CurvePoint[];
+}
+
+export interface InstitutionCurvesResp {
+  horizon: number;
+  capital: number;
+  min_trades: number;
+  entry_rule: string;
+  benchmark: CurveInstitution;
+  beat_benchmark: number;
+  institutions: CurveInstitution[];
 }
