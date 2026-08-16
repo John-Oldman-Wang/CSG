@@ -522,6 +522,8 @@ def main() -> None:
 def daily(
     push: Annotated[bool, typer.Option("--push/--no-push",
                                        help="是否真实推送飞书")] = True,
+    budget_minutes: Annotated[int, typer.Option(
+        help="采集阶段的总时间预算（分钟）。到点即停，剩余留待下次")] = 45,
     verbose: bool = True,
 ) -> None:
     """每日链：采集 → 检测事件 → 生成复核任务 → 推送飞书。
@@ -540,6 +542,19 @@ def daily(
 
     单步失败不中断后续：某个数据源挂掉不该让事件检测也不跑。
     但**任一步失败即以非零码退出且不写成功时间戳**——看门狗据此判定停摆。
+
+    ## 为什么必须有时间预算
+
+    首次真实运行时（2026-08-17 02:53）12 分钟只跑到 14/724，
+    财报每只约 117 秒 —— 按此速度需 20 余小时，且**全程独占 DuckDB 写锁**：
+    API 会返回 503 一整天，且下次 07:30 触发时上一次还没结束。
+
+    真因是股票池从 385 涨到 724，新增的 339 只从未采过财报，
+    于是「日常任务」实际在做一次全量补采。
+
+    水位保证续跑不重做，故「没跑完」不是失败，是把剩下的留给下一次。
+    默认 45 分钟：两次调度间隔 12 小时，足够在几天内补完积压，
+    又不会让前端长时间不可用。
     """
     import logging as _logging
     import time as _time
@@ -566,11 +581,29 @@ def daily(
         codes = _pool_codes(db)
         console.print(f"股票池 {len(codes)} 只")
 
+        # 预算在**四个**采集步骤间平分。
+        #
+        # ⚠️ 我最初把行情排除在预算外，理由写的是「增量拉取，快且不可省」。
+        # 那是没测就下的判断：实测东财对 stock_zh_a_hist 限流，
+        # 连续 ConnectionError → 熔断静置 60 秒，反复触发，
+        # 724 只能跑到天亮。**没有哪一步天然是快的。**
+        t0 = _time.monotonic()
+        share = budget_minutes * 60 / 4
+        console.print(f"采集预算 {budget_minutes} 分钟（四步各 {share / 60:.1f} 分钟）")
+
         step("采集 股票列表", lambda: ing.sync_stock_basic())
-        step("采集 财报", lambda: ing.sync_financials(codes))
-        step("采集 研报(东财)", lambda: ing.sync_research(codes, source="em"))
-        step("采集 研报(同花顺)", lambda: ing.sync_research(codes, source="ths"))
-        step("采集 行情", lambda: ing.sync_daily_quotes(codes))
+        step("采集 财报",
+             lambda: console.print(ing.sync_financials(
+                 codes, deadline=t0 + share)))
+        step("采集 研报(东财)",
+             lambda: console.print(ing.sync_research(
+                 codes, source="em", deadline=t0 + 2 * share)))
+        step("采集 研报(同花顺)",
+             lambda: console.print(ing.sync_research(
+                 codes, source="ths", deadline=t0 + 3 * share)))
+        step("采集 行情",
+             lambda: console.print(ing.sync_daily_quotes(
+                 codes, deadline=t0 + 4 * share)))
 
         step("检测事件",
              lambda: console.print(f"新增事件 {Detector(db).run_all()} 个"))

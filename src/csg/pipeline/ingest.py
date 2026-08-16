@@ -95,6 +95,7 @@ class Ingestor:
         start: dt.date = DEFAULT_START,
         end: dt.date | None = None,
         force: bool = False,
+        deadline: float | None = None,
         source: str = "auto",
     ) -> dict[str, int]:
         """逐只采集日线。
@@ -110,9 +111,13 @@ class Ingestor:
         一旦某只切到 baostock，其全部历史都由 baostock 提供。
         """
         end = end or dt.date.today()
-        stats = {"ok": 0, "skipped": 0, "failed": 0, "rows": 0}
+        stats = {"ok": 0, "skipped": 0, "failed": 0, "rows": 0, "未处理": 0}
 
         for i, code in enumerate(codes, 1):
+            if deadline is not None and time.monotonic() > deadline:
+                stats["未处理"] = len(codes) - i + 1
+                log.info("行情达时间预算，剩余 %d 只留待下次", stats["未处理"])
+                break
             wm = None if force else self.db.get_watermark("daily_quote", code)
             fetch_start = start
             if wm is not None:
@@ -175,6 +180,7 @@ class Ingestor:
         *,
         statements: Iterable[aks.Statement] = ("income", "balance", "cashflow"),
         force: bool = False,
+        deadline: float | None = None,
     ) -> dict[str, int]:
         """逐只采集三大报表。
 
@@ -182,11 +188,17 @@ class Ingestor:
         已与巨潮原始公告交叉验证一致。批量接口的公告日期与报告期错位，
         用于 PIT 会静默产生未来函数。
         """
-        stats = {"ok": 0, "skipped": 0, "failed": 0, "rows": 0}
+        stats = {"ok": 0, "skipped": 0, "failed": 0, "rows": 0, "未处理": 0}
         statements = list(statements)
         today = dt.date.today()
 
         for i, code in enumerate(codes, 1):
+            # 到点即停。水位保证续跑不重做，故「没跑完」不是失败，
+            # 是把剩下的留给下一次——总比占着写锁跑 20 小时好。
+            if deadline is not None and time.monotonic() > deadline:
+                stats["未处理"] = len(codes) - i + 1
+                log.info("财报达时间预算，剩余 %d 只留待下次", stats["未处理"])
+                break
             t0 = time.monotonic()
             for stmt in statements:
                 table = aks.target_table(stmt)
@@ -296,6 +308,7 @@ class Ingestor:
         refresh_days: int = 7,
         force: bool = False,
         source: str = "em",
+        deadline: float | None = None,
     ) -> dict[str, int]:
         """研报与盈利预测。
 
@@ -310,10 +323,16 @@ class Ingestor:
         fetch = (aks.fetch_research_reports if source == "em"
                  else ths.fetch_research)
 
-        stats = {"ok": 0, "skipped": 0, "failed": 0, "reports": 0, "forecasts": 0}
+        stats = {"ok": 0, "skipped": 0, "failed": 0, "reports": 0,
+                 "forecasts": 0, "未处理": 0}
         today = dt.date.today()
 
         for i, code in enumerate(codes, 1):
+            if deadline is not None and time.monotonic() > deadline:
+                stats["未处理"] = len(codes) - i + 1
+                log.info("研报[%s]达时间预算，剩余 %d 只留待下次",
+                         source, stats["未处理"])
+                break
             # ⚠️ 进度打印必须在**循环体开头**，不能放末尾。
             #
             # 事故（2026-08-17）：原先放在末尾，而它前面有两处 continue
