@@ -1356,6 +1356,256 @@ def portfolio() -> dict:
         }
 
 
+@app.get("/api/institution-pnl")
+def institution_pnl(
+    horizon: int = 20,
+    capital: float = 10000,
+    min_samples: int = 50,
+) -> dict:
+    """按机构统计「每份研报投入固定金额、持有 N 个交易日」的累计盈亏。
+
+    比胜率直观——盈亏是钱，胜率是抽象数。但有两个坑必须避开：
+
+    **① 基准必须用均值，不能用中位数。**
+    收益分布右偏（股票能涨 200%，最多跌 100%）。以中位数为基准时，
+    半数研报低于零，但少数大赢家把**均值**拉高，于是几乎每家机构的
+    平均超额都为正——实测 18 家里 17 家两期皆盈。那不是 alpha，是偏度。
+    均值基准使全样本超额严格为零和（实测 −0.000000%），
+    机构间才是真正的相对比较。
+
+    **② 必须分期呈现，不能只给全期合计。**
+    只看全期排名会直接引导出「跟着第一名买」，而实测秩相关为 −0.366、
+    前 1/3 留存率 0.333（恰等于随机基准）——历史排名不可外推。
+    分期并列时，名次交叉本身就是答案。
+
+    `capital` 只是把收益率换算成金钱的标尺，不代表可执行的策略：
+    某家机构五年发 1374 份研报，每份一万意味着投入 1374 万。
+    """
+    with read_db() as db:
+        rows = db.query(
+            """
+            WITH px AS (
+                SELECT code, trade_date, close * adj_factor AS p,
+                       row_number() OVER (PARTITION BY code ORDER BY trade_date) AS rn
+                FROM daily_quote
+                WHERE close IS NOT NULL AND adj_factor IS NOT NULL AND close > 0
+            ),
+            mx AS (SELECT code, max(rn) AS last_rn FROM px GROUP BY code),
+            ent AS (
+                SELECT r.code, r.publish_date, r.institution, min(px.rn) AS ern
+                FROM research_report r
+                JOIN px ON px.code = r.code AND px.trade_date > r.publish_date
+                WHERE r.rating IS NOT NULL AND r.rating <> ''
+                GROUP BY 1, 2, 3
+            ),
+            oc AS (
+                SELECT e.institution, e.publish_date, (h.p / en.p) - 1 AS ret
+                FROM ent e
+                JOIN mx ON mx.code = e.code
+                JOIN px en ON en.code = e.code AND en.rn = e.ern
+                JOIN px h  ON h.code  = e.code AND h.rn  = e.ern + ?
+                -- 窗口未走完的研报尚无结果，纳入即为时点偏差
+                WHERE e.ern + ? <= mx.last_rn
+            ),
+            b AS (
+                SELECT *,
+                       -- 均值基准：使超额严格零和，见 docstring ①
+                       ret - avg(ret) OVER (
+                           PARTITION BY date_trunc('month', publish_date)
+                       ) AS exc
+                FROM oc
+            )
+            SELECT institution AS 机构,
+                   CASE WHEN year(publish_date) BETWEEN 2018 AND 2022 THEN '发现期'
+                        WHEN year(publish_date) >= 2023 THEN '验证期' END AS 期,
+                   count(*) AS 份数,
+                   avg(exc) * count(*) * ? AS 累计超额,
+                   avg(ret) * count(*) * ? AS 累计绝对,
+                   avg(CASE WHEN exc > 0 THEN 1.0 ELSE 0.0 END) AS 胜率
+            FROM b
+            WHERE year(publish_date) >= 2018
+            GROUP BY 1, 2
+            """,
+            [horizon, horizon, capital, capital])
+
+    if rows.empty:
+        return {"horizon": horizon, "capital": capital, "rows": [], "stability": {}}
+
+    wide = rows.pivot(index="机构", columns="期")
+    for col in ("份数", "累计超额", "胜率"):
+        for per in ("发现期", "验证期"):
+            if (col, per) not in wide.columns:
+                wide[(col, per)] = None
+
+    keep = (wide[("份数", "发现期")].fillna(0) >= min_samples) & (
+        wide[("份数", "验证期")].fillna(0) >= min_samples)
+    wide = wide[keep]
+    if wide.empty:
+        return {"horizon": horizon, "capital": capital, "rows": [], "stability": {}}
+
+    out = pd.DataFrame({
+        "机构": wide.index,
+        "发现份数": wide[("份数", "发现期")].astype(int).to_numpy(),
+        "发现累计": wide[("累计超额", "发现期")].round(0).to_numpy(),
+        "发现胜率": wide[("胜率", "发现期")].to_numpy(),
+        "验证份数": wide[("份数", "验证期")].astype(int).to_numpy(),
+        "验证累计": wide[("累计超额", "验证期")].round(0).to_numpy(),
+        "验证胜率": wide[("胜率", "验证期")].to_numpy(),
+    })
+    out["发现排名"] = out["发现累计"].rank(ascending=False).astype(int)
+    out["验证排名"] = out["验证累计"].rank(ascending=False).astype(int)
+    out["名次变化"] = out["发现排名"] - out["验证排名"]
+
+    n = len(out)
+    k = max(1, n // 3)
+    top = set(out.nsmallest(k, "发现排名")["机构"])
+    still = len(top & set(out.nsmallest(k, "验证排名")["机构"]))
+    # 秩相关 = 排名的 Pearson 相关（手工实现，避免引入 scipy）
+    rho = float(out["发现排名"].corr(out["验证排名"]))
+
+    return {
+        "horizon": horizon,
+        "capital": capital,
+        "min_samples": min_samples,
+        "rows": _records(out.sort_values("发现排名")),
+        "stability": {
+            "机构数": n,
+            "秩相关": round(rho, 3),
+            "前1/3留存": round(still / k, 3),
+            "随机基准": round(k / n, 3),
+            "两期皆盈": int(((out["发现累计"] > 0) & (out["验证累计"] > 0)).sum()),
+        },
+    }
+
+
+@app.get("/api/institution-trades")
+def institution_trades(
+    institution: str,
+    horizon: int = 20,
+    capital: float = 10000,
+    start: str | None = None,
+    end: str | None = None,
+) -> dict:
+    """把某机构的每一份研报当作一笔交易，逐笔列出。
+
+    规则：研报发布后**第一个交易日**按收盘价买入，持有 `horizon` 个
+    交易日后按收盘价卖出。发布当日不买——那天的收盘价里已经包含了
+    研报的影响，用它买入等于假设你能在研报公开前拿到。
+
+    **买入价/卖出价用原始成交价，收益率用后复权计算。** 两者口径不同
+    是刻意的：价格要与你券商 App 看到的一致，收益率必须正确处理
+    持有期内的除权除息。若持有期内发生除权，按显示价格手算的涨幅
+    会与 `收益率` 对不上——此时 `除权` 标记为真，差额即分红送转，
+    那部分钱你确实拿到了，只是不体现在价格上。
+
+    窗口未走完的研报不列入：它们尚无结果，填任何数字都是虚构。
+    """
+    where, params = ["r.institution = ?"], [institution]
+    if start:
+        where.append("r.publish_date >= ?")
+        params.append(dt.date.fromisoformat(start))
+    if end:
+        where.append("r.publish_date <= ?")
+        params.append(dt.date.fromisoformat(end))
+    cond = " AND ".join(where)
+
+    with read_db() as db:
+        trades = db.query(
+            f"""
+            WITH px AS (
+                SELECT code, trade_date, close AS raw, close * adj_factor AS adj,
+                       row_number() OVER (PARTITION BY code ORDER BY trade_date) AS rn
+                FROM daily_quote
+                WHERE close IS NOT NULL AND adj_factor IS NOT NULL AND close > 0
+            ),
+            mx AS (SELECT code, max(rn) AS last_rn FROM px GROUP BY code),
+            ent AS (
+                SELECT r.code, r.publish_date, r.title, r.rating,
+                       min(px.rn) AS ern
+                FROM research_report r
+                JOIN px ON px.code = r.code AND px.trade_date > r.publish_date
+                WHERE {cond}
+                GROUP BY 1, 2, 3, 4
+            )
+            SELECT e.publish_date        AS 发布日,
+                   e.code                AS 代码,
+                   b.name                AS 股票,
+                   e.title               AS 标题,
+                   e.rating              AS 评级,
+                   en.trade_date         AS 买入日,
+                   en.raw                AS 买入价,
+                   ex.trade_date         AS 卖出日,
+                   ex.raw                AS 卖出价,
+                   (ex.adj / en.adj) - 1 AS 收益率,
+                   ((ex.adj / en.adj) - 1) * ? AS 盈亏,
+                   -- 持有期内发生除权则显示价与复权价的涨幅不一致
+                   abs((ex.adj / en.adj) - (ex.raw / en.raw)) > 0.001 AS 除权
+            FROM ent e
+            JOIN mx ON mx.code = e.code
+            JOIN px en ON en.code = e.code AND en.rn = e.ern
+            JOIN px ex ON ex.code = e.code AND ex.rn = e.ern + ?
+            LEFT JOIN stock_basic b ON b.code = e.code
+            WHERE e.ern + ? <= mx.last_rn
+            ORDER BY e.publish_date DESC
+            """,
+            [*params, capital, horizon, horizon])
+
+    if trades.empty:
+        return {"institution": institution, "horizon": horizon,
+                "capital": capital, "summary": None, "trades": []}
+
+    ret = trades["收益率"]
+    wins = int((ret > 0).sum())
+    summary = {
+        "笔数": len(trades),
+        "总盈亏": float(trades["盈亏"].sum()),
+        "总投入": float(capital * len(trades)),
+        "胜率": wins / len(trades),
+        "盈利笔数": wins,
+        "亏损笔数": len(trades) - wins,
+        "平均收益率": float(ret.mean()),
+        "中位收益率": float(ret.median()),
+        "最好": float(ret.max()),
+        "最差": float(ret.min()),
+        # 盈亏比：赚钱时平均赚多少 / 亏钱时平均亏多少。
+        # 胜率低但盈亏比高的组合仍可盈利，只看胜率会误判。
+        "盈亏比": (float(ret[ret > 0].mean() / abs(ret[ret < 0].mean()))
+                   if (ret < 0).any() and (ret > 0).any() else None),
+        "含除权笔数": int(trades["除权"].sum()),
+    }
+
+    # 资金曲线：按发布日正序累计
+    curve = trades.sort_values("发布日")[["发布日", "盈亏"]].copy()
+    curve["累计"] = curve["盈亏"].cumsum()
+
+    return {
+        "institution": institution,
+        "horizon": horizon,
+        "capital": capital,
+        "summary": summary,
+        "curve": _records(curve),
+        "trades": _records(trades),
+    }
+
+
+# 路径不可用 /api/institutions —— 那个已被研报检索页占用。
+# FastAPI 按注册顺序取第一个匹配的路由，重名不会报错，
+# 只会让后注册的永远收不到请求：又一种静默失效。
+@app.get("/api/institution-options")
+def institution_options(min_reports: int = 30) -> list[dict]:
+    """有足够样本的机构名单，供逐笔复盘页下拉选择。"""
+    with read_db() as db:
+        return _records(db.query(
+            """
+            SELECT institution AS 机构, count(*) AS 研报数,
+                   min(publish_date) AS 最早, max(publish_date) AS 最晚
+            FROM research_report
+            WHERE rating IS NOT NULL AND rating <> ''
+            GROUP BY 1 HAVING count(*) >= ?
+            ORDER BY count(*) DESC
+            """, [min_reports]))
+
+
 @app.get("/api/institution-winrates")
 def institution_winrates(
     horizon: Annotated[int, Query(ge=20, le=250, description="考察窗口，交易日")] = 60,

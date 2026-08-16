@@ -370,3 +370,77 @@ export interface WinRatesResp {
   rows: WinRateRow[];
   caveat: string;
 }
+
+/** 机构盈亏：每份研报投入固定金额、持有 N 日的累计**超额**盈亏。 */
+export interface InstitutionPnlRow {
+  机构: string;
+  发现份数: number;
+  发现累计: number;
+  发现胜率: number | null;
+  验证份数: number;
+  验证累计: number;
+  验证胜率: number | null;
+  发现排名: number;
+  验证排名: number;
+  名次变化: number;
+}
+
+export interface InstitutionPnlResp {
+  horizon: number;
+  capital: number;
+  min_samples: number;
+  rows: InstitutionPnlRow[];
+  stability: {
+    机构数: number;
+    秩相关: number;
+    "前1/3留存": number;
+    随机基准: number;
+    两期皆盈: number;
+  };
+}
+
+export interface TradeRow {
+  发布日: string;
+  代码: string;
+  股票: string | null;
+  标题: string;
+  评级: string | null;
+  买入日: string;
+  买入价: number;
+  卖出日: string;
+  卖出价: number;
+  收益率: number;
+  盈亏: number;
+  /** 持有期内发生除权除息：显示价格手算的涨幅与「收益率」不符，差额为分红送转 */
+  除权: boolean;
+}
+
+export interface InstitutionTradesResp {
+  institution: string;
+  horizon: number;
+  capital: number;
+  summary: {
+    笔数: number;
+    总盈亏: number;
+    总投入: number;
+    胜率: number;
+    盈利笔数: number;
+    亏损笔数: number;
+    平均收益率: number;
+    中位收益率: number;
+    最好: number;
+    最差: number;
+    盈亏比: number | null;
+    含除权笔数: number;
+  } | null;
+  curve?: { 发布日: string; 盈亏: number; 累计: number }[];
+  trades: TradeRow[];
+}
+
+/** 逐笔复盘页的机构下拉项（与研报页的 InstitutionListRow 不同）。 */
+export interface InstitutionOption {
+  机构: string;
+  研报数: number;
+  最早: string;
+  最晚: string;
+}

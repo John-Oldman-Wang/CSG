@@ -5,7 +5,10 @@ import type {
   FinancialPeriod,
   HealthInfo,
   Institution,
+  InstitutionOption,
+  InstitutionPnlResp,
   InstitutionStats,
+  InstitutionTradesResp,
   PoolTiersResp,
   PortfolioResp,
   ReportAnalysis,
@@ -143,6 +146,23 @@ export const api = {
     get<WinRatesResp>("/institution-winrates", {
       horizon,
       min_samples: minSamples,
+    }),
+
+  institutionPnl: (horizon = 20, capital = 10000, minSamples = 50) =>
+    get<InstitutionPnlResp>("/institution-pnl", {
+      horizon,
+      capital,
+      min_samples: minSamples,
+    }),
+
+  institutionOptions: (minReports = 30) =>
+    get<InstitutionOption[]>("/institution-options", { min_reports: minReports }),
+
+  institutionTrades: (institution: string, horizon = 20, capital = 10000) =>
+    get<InstitutionTradesResp>("/institution-trades", {
+      institution,
+      horizon,
+      capital,
     }),
 
   poolTiers: () => get<PoolTiersResp>("/pool-tiers"),

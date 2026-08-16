@@ -3,6 +3,7 @@ import { useTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 import Dashboard from "@/pages/Dashboard";
 import InstitutionStats from "@/pages/InstitutionStats";
+import InstitutionTrades from "@/pages/InstitutionTrades";
 import PoolTiers from "@/pages/PoolTiers";
 import ReportAnalysis from "@/pages/ReportAnalysis";
 import Reports from "@/pages/Reports";
@@ -17,6 +18,7 @@ const NAV = [
   { to: "/tasks", label: "复核任务" },
   { to: "/reports", label: "研报检索" },
   { to: "/institutions", label: "机构胜率" },
+  { to: "/institution-trades", label: "逐笔复盘" },
   { to: "/validations", label: "验证结果" },
 ];
 
@@ -69,6 +71,7 @@ export default function App() {
           <Route path="/reports" element={<Reports />} />
           <Route path="/reports/:reportId" element={<ReportAnalysis />} />
           <Route path="/institutions" element={<InstitutionStats />} />
+          <Route path="/institution-trades" element={<InstitutionTrades />} />
           <Route path="/validations" element={<Validations />} />
         </Routes>
       </main>
