@@ -157,29 +157,55 @@ def stock_quotes(
     code: str,
     start: str = "2016-01-01",
     end: str | None = None,
-    adjust: Annotated[str, Query(pattern="^(hfq|none)$")] = "hfq",
+    adjust: Annotated[str, Query(pattern="^(qfq|hfq|none)$")] = "qfq",
 ) -> list[dict]:
     """K 线数据。
 
-    后复权用于计算与技术分析——它不会因未来的除权事件改变历史值。
-    前复权仅可用于展示，且必须实时计算，绝不落盘。
+    三种口径的**用途互不重叠，用错即为错误数据**：
+
+    - `qfq` 前复权（默认）：**唯一可用于展示**的口径。
+      最新一日等于真实成交价，与券商 App 显示一致。
+      实时计算、绝不落盘——它会因未来的除权事件改变历史值。
+    - `hfq` 后复权：用于计算收益率与技术指标，历史值恒定不变。
+      **其绝对值以上市首日为基准，没有现实含义，不可当价格显示。**
+      例：300568 于 2026-08-14 真实开盘 14.51，后复权为 106.56（因子 7.34）。
+    - `none` 原始价：当日真实成交价，但跨除权日会出现断崖，不适合看走势。
+
+    前复权与后复权的**收益率完全相同**（比值相同，归一化常数抵消），
+    因此把展示口径从 hfq 改为 qfq 不影响任何已有的收益计算。
     """
     end_date = dt.date.fromisoformat(end) if end else dt.date.today()
     with read_db() as db:
-        px = "close * adj_factor" if adjust == "hfq" else "close"
+        if adjust == "none":
+            mul = "1"
+        elif adjust == "hfq":
+            mul = "adj_factor"
+        else:
+            # 前复权：以**全序列最新一日**的因子归一化——不是请求区间的末日。
+            # 若按区间末日归一，缩放时间轴会导致纵轴数值整体变化
+            # （查 2016 年得到 31.18，查至今得到 4.25），与券商 App 不符。
+            # 基准恒定，图形缩放时纵轴才稳定。
+            mul = ("adj_factor / (SELECT adj_factor FROM daily_quote "
+                   "WHERE code = ? AND adj_factor IS NOT NULL "
+                   "ORDER BY trade_date DESC LIMIT 1)")
+
+        params: list = []
+        for _ in range(4 if adjust == "qfq" else 0):
+            params.append(code)
+
         df = db.query(
             f"""
             SELECT trade_date AS time,
-                   open  * {'adj_factor' if adjust == 'hfq' else '1'} AS open,
-                   high  * {'adj_factor' if adjust == 'hfq' else '1'} AS high,
-                   low   * {'adj_factor' if adjust == 'hfq' else '1'} AS low,
-                   {px} AS close,
+                   open  * ({mul}) AS open,
+                   high  * ({mul}) AS high,
+                   low   * ({mul}) AS low,
+                   close * ({mul}) AS close,
                    volume, amount, pct_chg
             FROM daily_quote
             WHERE code = ? AND trade_date BETWEEN ? AND ?
             ORDER BY trade_date
             """,
-            [code, dt.date.fromisoformat(start), end_date])
+            [*params, code, dt.date.fromisoformat(start), end_date])
         return _records(df)
 
 
@@ -680,19 +706,34 @@ def report_analysis(
         report["prev_rating"] = prev["rating"].iloc[0] if not prev.empty else None
 
         # 行情窗口：发布日前后各取一段，便于观察「发布前走势」与「发布后表现」
+        #
+        # ⚠️ 复权基准取**发布日**，不是今天，也不能用后复权原值。
+        #    本页要把研报的目标价/预测 EPS 隐含价标注在 K 线上，
+        #    而那些价格是**发布当时的实际价格**。三种口径的后果：
+        #      后复权    K 线被抬到以上市首日为基准的数值（300568 达 7.34 倍），
+        #                目标价贴上去差一个数量级，标注完全错位
+        #      前复权到今天  同样错位，只是倍数不同
+        #      前复权到发布日  发布日当天 = 真实价，与目标价同坐标系，
+        #                且窗口内不会出现除权断崖 ✓
         quotes = db.query(
             """
+            WITH base AS (
+                SELECT adj_factor AS f FROM daily_quote
+                WHERE code = ? AND trade_date <= ? AND adj_factor IS NOT NULL
+                ORDER BY trade_date DESC LIMIT 1
+            )
             SELECT trade_date AS time,
-                   open * adj_factor  AS open,
-                   high * adj_factor  AS high,
-                   low  * adj_factor  AS low,
-                   close * adj_factor AS close,
+                   open  * adj_factor / (SELECT f FROM base) AS open,
+                   high  * adj_factor / (SELECT f FROM base) AS high,
+                   low   * adj_factor / (SELECT f FROM base) AS low,
+                   close * adj_factor / (SELECT f FROM base) AS close,
                    volume, amount, pct_chg
             FROM daily_quote
             WHERE code = ? AND trade_date BETWEEN ? AND ?
             ORDER BY trade_date
             """,
-            [code, pub - dt.timedelta(days=window_days),
+            [code, pub,
+             code, pub - dt.timedelta(days=window_days),
              pub + dt.timedelta(days=window_days)])
 
         # 发布后表现：入场价取发布日之后首个交易日收盘
