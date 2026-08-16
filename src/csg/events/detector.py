@@ -131,7 +131,6 @@ class Detector:
                     "delta": int(r["delta"]),
                     "report_title": r["title"],
                 }, ensure_ascii=False),
-                "is_backfill": False,
             })
         return pd.DataFrame(rows)
 
@@ -175,7 +174,6 @@ class Detector:
                 "severity": "P2",
                 "title": f"单日 {int(r['n'])} 家机构发布研报",
                 "payload": json.dumps({"count": int(r["n"])}, ensure_ascii=False),
-                "is_backfill": False,
             })
         return pd.DataFrame(rows)
 
@@ -222,7 +220,6 @@ class Detector:
                     "revenue": float(r["total_revenue"]) if pd.notna(r["total_revenue"]) else None,
                     "net_profit": float(r["n_income_attr_p"]) if pd.notna(r["n_income_attr_p"]) else None,
                 }, ensure_ascii=False),
-                "is_backfill": False,
             })
         return pd.DataFrame(rows)
 
@@ -298,7 +295,6 @@ class Detector:
                     "excess": round(float(r["excess"]), 4),
                     "lookback_days": lookback_days,
                 }, ensure_ascii=False),
-                "is_backfill": False,
             })
         return pd.DataFrame(rows)
 
@@ -328,7 +324,51 @@ class Detector:
             return 0
 
         allev = pd.concat(frames, ignore_index=True).drop_duplicates("event_id")
+        allev = self._mark_backfill(allev)
         before = self.db.query("SELECT count(*) AS n FROM event")["n"].iloc[0]
         self.db.upsert("event", allev, ["event_id"])
         after = self.db.query("SELECT count(*) AS n FROM event")["n"].iloc[0]
         return int(after - before)
+
+    def _mark_backfill(self, ev: pd.DataFrame) -> pd.DataFrame:
+        """标记「在你开始盯这只股票之前就发生」的事件。
+
+        **这是复核任务是否有意义的分界线。**
+
+        复核任务问的是「以今天的价格、今天掌握的信息，我会重新买入吗」。
+        这个问题只有对**持有期间到达的**事件才成立。对一份 2024 年的财报，
+        今天回答它等于用两年后的后见之明去评判——正是本系统存在的目的
+        所要防止的事。
+
+        事故记录（2026-08-16）：四个检测器把 `is_backfill` 全部硬编码为
+        `False`，而 `strategies.py:245` 的 `WHERE is_backfill = FALSE`
+        过滤器写得完全正确。护栏建好、管道接通、**生产端从未置位**——
+        于是两只股票刚加入观察池，就收到 20 条历史财报复核任务，
+        全部同一时刻生成、全部次日到期。不报错，只是把队列冲垮。
+
+        回补事件**仍然入库**：它们是事实，`auto_check` 可以据此产出
+        「你的证伪条件在过去 N 期里其实已经触发过 K 次」这类一次性核对，
+        那是历史数据的正确用法——它不该变成每天催你的任务。
+        """
+        if ev.empty:
+            return ev
+
+        added = self.db.query("SELECT code, added_at FROM watchlist")
+        if added.empty:
+            # 观察池为空时无从判断「开始盯的时点」，一律视为回补：
+            # 宁可漏推，不可把历史当新闻。漏推可从 event 表补看，
+            # 误推会让你对整个队列失去信任。
+            ev["is_backfill"] = True
+            return ev
+
+        amap = dict(zip(added["code"], pd.to_datetime(added["added_at"]).dt.date, strict=True))
+        ev["is_backfill"] = [
+            # 无 added_at 记录的代码同样按回补处理（同上，取保守侧）
+            True if (a := amap.get(c)) is None else pd.Timestamp(d).date() < a
+            for c, d in zip(ev["code"], ev["ref_date"], strict=True)
+        ]
+        n = int(ev["is_backfill"].sum())
+        if n:
+            log.info("标记 %d/%d 个事件为回补（早于其入池时点，不生成复核任务）",
+                     n, len(ev))
+        return ev
