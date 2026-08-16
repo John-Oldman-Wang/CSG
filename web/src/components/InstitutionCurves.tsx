@@ -72,11 +72,21 @@ export function InstitutionCurves({ onPick }: { onPick?: (institution: string) =
           ? (c.累计超额 / inst.所需资金) * 100
           : c.累计盈亏;
     const byMonth = new Map(inst.曲线.map((c) => [c.月, pick(c)]));
+    // 末次有数据的月份。**超过它之后必须断线，不能继续平推。**
+    //
+    // 事故（2026-08-17）：原先无条件沿用上一个值，于是停止发研报的机构
+    // （如中金财富，仅 2017-08 ~ 2018-04 共 5 条）会拉出一条从 2018 平推到
+    // 2026 的水平线。同期别家在涨，视觉上就成了「一路下跌」——
+    // 用户据此以为数据有问题。它其实是掉了一次之后再没动过。
+    //
+    // 断线后该机构在右侧消失，看起来"少了"，但那正是事实：
+    // 它那段时间没有任何交易，任何延伸都是我们替它编的。
+    const lastMonth = inst.曲线.length ? inst.曲线[inst.曲线.length - 1].月 : "";
     let last: number | null = null;
     const series = months.map((m) => {
       const v = byMonth.get(m);
       if (v != null) last = v;
-      return last;
+      return m <= lastMonth ? last : null;
     });
     return {
       name: inst.机构,
