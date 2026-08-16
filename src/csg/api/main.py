@@ -1162,3 +1162,99 @@ def portfolio() -> dict:
                       .reset_index(name="weight").sort_values("weight", ascending=False)),
             },
         }
+
+
+@app.get("/api/institution-winrates")
+def institution_winrates(
+    horizon: Annotated[int, Query(ge=20, le=250, description="考察窗口，交易日")] = 60,
+    min_samples: Annotated[int, Query(ge=3)] = 10,
+) -> dict:
+    """各券商在近一年 / 近两年 / 近三年的胜率对比。
+
+    **两个必须理解的设计约束：**
+
+    1. **窗口默认 60 日而非 250 日。** 若用 250 日（约一年），
+       「近一年发布的研报」中绝大多数尚未走完窗口，会被全部剔除，
+       该时段样本近乎归零。60 日（约三个月）能让三个时段都有可比样本。
+
+    2. **仍然排除未走完窗口的研报。** 发布日 + horizon 若超出数据末日，
+       该研报尚无结果；纳入统计会依最近行情涨跌而系统性偏移。
+
+    胜率以**超额收益**为准（个股收益 − 同月全样本中位数）：
+    用绝对收益的话，牛市里所有机构都「赢」，那不是研报的功劳。
+
+    ⚠️ 已实测机构排名的跨期秩相关为 −0.286（比随机更差）。
+    本表用于查看历史分布，**不可外推为未来的机构权重**。
+    """
+    with read_db() as db:
+        end = db.query(
+            "SELECT max(trade_date) AS d FROM daily_quote")["d"].iloc[0]
+        end_date = pd.Timestamp(end).date()
+
+        rows = db.query(
+            """
+            WITH px AS (
+                SELECT code, trade_date, close * adj_factor AS p,
+                       row_number() OVER (PARTITION BY code ORDER BY trade_date) AS rn
+                FROM daily_quote
+                WHERE close IS NOT NULL AND adj_factor IS NOT NULL AND close > 0
+            ),
+            maxrn AS (SELECT code, max(rn) AS last_rn FROM px GROUP BY code),
+            ent AS (
+                SELECT r.code, r.publish_date, r.institution,
+                       min(px.rn) AS entry_rn
+                FROM research_report r
+                JOIN px ON px.code = r.code AND px.trade_date > r.publish_date
+                WHERE r.rating IS NOT NULL AND r.rating <> ''
+                GROUP BY r.code, r.publish_date, r.institution
+            ),
+            outcome AS (
+                SELECT e.publish_date, e.institution,
+                       (h.p / en.p) - 1 AS ret
+                FROM ent e
+                JOIN maxrn m ON m.code = e.code
+                JOIN px en ON en.code = e.code AND en.rn = e.entry_rn
+                JOIN px h  ON h.code  = e.code AND h.rn  = e.entry_rn + ?
+                -- 窗口必须已走完，否则该研报尚无结果
+                WHERE e.entry_rn + ? <= m.last_rn
+            ),
+            benched AS (
+                SELECT o.*,
+                       o.ret - median(o.ret) OVER (
+                           PARTITION BY date_trunc('month', o.publish_date)
+                       ) AS excess
+                FROM outcome o
+            )
+            SELECT institution AS 机构,
+                   -- 三个时段各自的样本量与胜率
+                   count(*) FILTER (WHERE publish_date >= ? - INTERVAL 1 YEAR)  AS n1,
+                   count(*) FILTER (WHERE publish_date >= ? - INTERVAL 2 YEAR)  AS n2,
+                   count(*) FILTER (WHERE publish_date >= ? - INTERVAL 3 YEAR)  AS n3,
+                   avg(CASE WHEN excess > 0 THEN 1.0 ELSE 0.0 END)
+                       FILTER (WHERE publish_date >= ? - INTERVAL 1 YEAR)       AS w1,
+                   avg(CASE WHEN excess > 0 THEN 1.0 ELSE 0.0 END)
+                       FILTER (WHERE publish_date >= ? - INTERVAL 2 YEAR)       AS w2,
+                   avg(CASE WHEN excess > 0 THEN 1.0 ELSE 0.0 END)
+                       FILTER (WHERE publish_date >= ? - INTERVAL 3 YEAR)       AS w3,
+                   median(excess) FILTER (WHERE publish_date >= ? - INTERVAL 1 YEAR) AS e1,
+                   median(excess) FILTER (WHERE publish_date >= ? - INTERVAL 2 YEAR) AS e2,
+                   median(excess) FILTER (WHERE publish_date >= ? - INTERVAL 3 YEAR) AS e3
+            FROM benched
+            GROUP BY institution
+            HAVING count(*) FILTER (WHERE publish_date >= ? - INTERVAL 3 YEAR) >= ?
+            ORDER BY w3 DESC NULLS LAST
+            """,
+            [horizon, horizon] + [end_date] * 10 + [min_samples],
+        )
+
+        return {
+            "horizon": horizon,
+            "as_of": str(end_date),
+            "total": len(rows),
+            "rows": _records(rows),
+            "caveat": (
+                f"窗口 {horizon} 交易日；已排除窗口未走完的研报。"
+                "胜率以超额收益（个股收益 − 同月全样本中位数）为准。"
+                "⚠️ 机构排名跨期秩相关实测 −0.286，本表不可外推为未来权重。"
+            ),
+        }

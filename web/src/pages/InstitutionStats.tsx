@@ -8,7 +8,15 @@ import {
 import { AgGridReact } from "ag-grid-react";
 import { useMemo, useState } from "react";
 import { api, DataLockedError } from "@/api/client";
-import { Badge, Button, Card, CardTitle, DataLocked } from "@/components/ui/primitives";
+import {
+  Badge,
+  Button,
+  Card,
+  CardTitle,
+  DataLocked,
+  Empty,
+  WinRateBadge,
+} from "@/components/ui/primitives";
 import { useTheme } from "@/lib/theme";
 import { pct } from "@/lib/utils";
 import type { InstitutionStatRow } from "@/types";
@@ -76,6 +84,12 @@ export default function InstitutionStats() {
   const [horizon, setHorizon] = useState(250);
   const [groupBy, setGroupBy] = useState<"year" | "half" | "quarter" | "all">("year");
   const [minSamples, setMinSamples] = useState(20);
+
+  const winrates = useQuery({
+    queryKey: ["institutionWinRates", minSamples],
+    queryFn: () => api.institutionWinRates(60, minSamples),
+    placeholderData: keepPreviousData,
+  });
 
   const { data, error, isFetching } = useQuery({
     queryKey: ["institutionStats", horizon, groupBy, minSamples],
@@ -255,6 +269,56 @@ export default function InstitutionStats() {
           <br />
           已排除<b>窗口未走完</b>的研报：发布日 + {horizon} 个交易日若超出数据末日，
           该研报尚无结果，纳入统计会依最近行情涨跌而系统性高估或低估。
+        </p>
+      </Card>
+
+      {/* ── 多窗口胜率总览 ─────────────────────── */}
+      <Card>
+        <CardTitle
+          extra={
+            <span className="text-[var(--color-muted)] text-xs">
+              窗口 {winrates.data?.horizon ?? 60} 交易日 · 截至 {winrates.data?.as_of ?? "—"}
+            </span>
+          }
+        >
+          各券商胜率（近一年 / 近两年 / 近三年）
+        </CardTitle>
+
+        <p className="mb-3 text-[var(--color-muted)] text-xs leading-relaxed">
+          窗口取 <b>60 交易日</b>而非 250 日：若用 250 日，
+          「近一年发布的研报」中绝大多数尚未走完窗口会被全部剔除，该时段样本近乎归零。
+          <br />
+          括号内为样本量。<b>样本不足 10 条的置灰</b>——小样本的胜率不具解读价值。 50%
+          为随机基准，超过标红、低于标绿。
+        </p>
+
+        {winrates.isLoading ? (
+          <Empty>加载中</Empty>
+        ) : (
+          <div className="space-y-1">
+            {(winrates.data?.rows ?? []).map((r) => (
+              <div
+                key={r.机构}
+                className="flex items-center gap-3 rounded px-2 py-1.5 hover:bg-[var(--color-surface)]"
+              >
+                <span className="w-28 truncate text-sm">{r.机构}</span>
+                <WinRateBadge rate={r.w1} samples={r.n1} label="1年" />
+                <WinRateBadge rate={r.w2} samples={r.n2} label="2年" />
+                <WinRateBadge rate={r.w3} samples={r.n3} label="3年" />
+                {/* 三窗口极差：跨期不稳定性的直观度量 */}
+                {r.w1 != null && r.w3 != null && Math.abs(r.w1 - r.w3) > 0.15 && (
+                  <span className="text-[var(--color-p1)] text-xs">
+                    跨期波动 {(Math.abs(r.w1 - r.w3) * 100).toFixed(0)}pp
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        <p className="mt-3 border-[var(--color-border)] border-t pt-3 text-[var(--color-p1)] text-xs">
+          注意观察「跨期波动」标记：同一家机构在不同窗口下胜率剧烈跳动，
+          正是机构排名不可复现的直接体现（实测跨期秩相关 −0.286）。
         </p>
       </Card>
 

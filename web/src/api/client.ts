@@ -7,6 +7,7 @@ import type {
   Institution,
   InstitutionStats,
   PoolTiersResp,
+  WinRatesResp,
   PortfolioResp,
   ReportAnalysis,
   ReportFilters,
@@ -137,6 +138,12 @@ export const api = {
     }
     return get<InstitutionStats>("/institution-stats", q);
   },
+
+  institutionWinRates: (horizon = 60, minSamples = 10) =>
+    get<WinRatesResp>("/institution-winrates", {
+      horizon,
+      min_samples: minSamples,
+    }),
 
   poolTiers: () => get<PoolTiersResp>("/pool-tiers"),
 

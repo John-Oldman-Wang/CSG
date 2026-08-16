@@ -90,6 +90,52 @@ export function Button({
   );
 }
 
+/** 胜率徽章。
+ *
+ * 50% 是随机基准——低于它意味着不如抛硬币，故以此为着色分界。
+ * 配色沿用 A 股惯例：优于基准用红，劣于基准用绿。
+ * 样本量始终并列显示：小样本的胜率不具解读价值，
+ * 只给数字而不给样本量会诱导错误判断。
+ */
+export function WinRateBadge({
+  rate,
+  samples,
+  minSamples = 10,
+  label,
+}: {
+  rate: number | null;
+  samples: number;
+  minSamples?: number;
+  label?: string;
+}) {
+  const insufficient = samples < minSamples;
+  const tone =
+    rate == null || insufficient
+      ? "border-[var(--color-border)] text-[var(--color-muted)]"
+      : rate > 0.5
+        ? "border-[var(--color-up)]/40 bg-[var(--color-up)]/10 text-[var(--color-up)]"
+        : "border-[var(--color-down)]/40 bg-[var(--color-down)]/10 text-[var(--color-down)]";
+
+  return (
+    <span
+      title={
+        insufficient
+          ? `样本仅 ${samples} 条，不足 ${minSamples}，统计量不可靠`
+          : `${samples} 条样本`
+      }
+      className={cn(
+        "num inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-xs",
+        tone,
+        insufficient && "opacity-50",
+      )}
+    >
+      {label && <span className="text-[10px] opacity-70">{label}</span>}
+      {rate == null ? "—" : `${(rate * 100).toFixed(0)}%`}
+      <span className="text-[10px] opacity-60">({samples})</span>
+    </span>
+  );
+}
+
 export function Empty({ children }: { children: ReactNode }) {
   return <div className="py-8 text-center text-[var(--color-muted)] text-sm">{children}</div>;
 }
