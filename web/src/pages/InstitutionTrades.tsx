@@ -195,7 +195,22 @@ export default function InstitutionTrades() {
     ? {
         backgroundColor: "transparent",
         grid: { left: 62, right: 20, top: 16, bottom: 30 },
-        tooltip: { trigger: "axis" },
+        tooltip: {
+          trigger: "axis",
+          // 除了累计盈亏，同时显示该时点在手的股票数——
+          // 曲线陡升往往是因为当时压了很多只，而不是每笔都准
+          formatter: (ps: { dataIndex: number; value: number }[]) => {
+            const i = ps[0]?.dataIndex ?? 0;
+            const pt = (data.curve as CurvePt[])[i];
+            if (!pt) return "";
+            return [
+              String(pt.发布日).slice(0, 10),
+              `累计盈亏　${(pt.累计 / 10000).toFixed(2)} 万`,
+              `本笔　　　${pt.盈亏 >= 0 ? "+" : ""}${pt.盈亏.toFixed(0)} 元`,
+              `当时持股　${pt.持股数} 只`,
+            ].join("<br/>");
+          },
+        },
         xAxis: {
           type: "category",
           data: (data.curve as CurvePt[]).map((c) => String(c.发布日).slice(0, 10)),

@@ -103,12 +103,25 @@ export function InstitutionCurves({ onPick }: { onPick?: (institution: string) =
         const sorted = [...ps].filter((p) => p.value != null).sort((a, b) => b.value - a.value);
         const fmt = (v: number) =>
           mode === "rate" ? `${v.toFixed(2)}%` : `${(v / 10000).toFixed(1)}万`;
-        const head = `${sorted[0]?.axisValue ?? ""}`;
+        const month = sorted[0]?.axisValue ?? "";
+
+        // 该月在手股票数：曲线的高度是「赚了多少」，
+        // 持股数是「当时压了几只」——两者要一起看才知道钱是怎么来的
+        const holdings = new Map(
+          [data.benchmark, ...data.institutions].map((i) => {
+            const c = i.曲线.find((x) => x.月 === month);
+            return [i.机构, c] as const;
+          }),
+        );
         const body = sorted
           .slice(0, 8)
-          .map((p) => `${p.seriesName}　${fmt(p.value)}`)
+          .map((p) => {
+            const c = holdings.get(p.seriesName);
+            const held = c ? `　持股 ${c.月末持股}（月内峰值 ${c.月内峰值持股}）` : "";
+            return `${p.seriesName}　${fmt(p.value)}${held}`;
+          })
           .join("<br/>");
-        return `${head}<br/>${body}${sorted.length > 8 ? "<br/>…" : ""}`;
+        return `${month}<br/>${body}${sorted.length > 8 ? "<br/>…" : ""}`;
       },
     },
     legend: {

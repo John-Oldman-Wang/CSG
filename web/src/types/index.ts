@@ -447,7 +447,7 @@ export interface InstitutionTradesResp {
     盈亏比: number | null;
     含除权笔数: number;
   } | null;
-  curve?: { 发布日: string; 盈亏: number; 累计: number }[];
+  curve?: { 发布日: string; 盈亏: number; 累计: number; 持股数: number }[];
   trades: TradeRow[];
 }
 
@@ -466,6 +466,10 @@ export interface CurvePoint {
   累计超额: number;
   累计收益率: number;
   累计笔数: number;
+  /** 该月最后一天在手的股票数 */
+  月末持股: number;
+  /** 该月每日持股数的最大值。恒 ≥ 月末持股 */
+  月内峰值持股: number;
 }
 
 export interface IndexLine {

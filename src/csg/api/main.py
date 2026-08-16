@@ -1726,6 +1726,8 @@ def institution_curves(
         m["累计盈亏"] = m["盈亏"].cumsum().round(0)
         m["累计超额"] = m["超额盈亏"].cumsum().round(0)
         m["累计笔数"] = m["笔数"].cumsum()
+        m["月末持股"], m["月内峰值持股"] = _monthly_holdings(
+            g["买入日"], g["卖出日"], m["月"].tolist())
         m["累计投入"] = m["累计笔数"] * capital
         m["累计收益率"] = m["累计盈亏"] / m["累计投入"]
 
@@ -1766,7 +1768,8 @@ def institution_curves(
             "提前离场笔数": int(g["提前离场"].sum()),
             "平均持有日": round(float(g["持有交易日"].mean()), 1),
             "最大回撤": _max_drawdown(m["累计盈亏"].to_numpy(), use["所需资金"]),
-            "曲线": _records(m[["月", "累计盈亏", "累计超额", "累计收益率", "累计笔数"]]),
+            "曲线": _records(m[["月", "累计盈亏", "累计超额", "累计收益率",
+                                 "累计笔数", "月末持股", "月内峰值持股"]]),
         })
 
     out.sort(key=lambda x: x["年化收益率"] or -1.0, reverse=True)
@@ -1784,8 +1787,13 @@ def institution_curves(
     bm["累计盈亏"] = bm["盈亏"].cumsum().round(0)
     bm["累计超额"] = bm["超额盈亏"].cumsum().round(0)
     bm["累计笔数"] = bm["笔数"].cumsum()
+    bm["月末持股"], bm["月内峰值持股"] = _monthly_holdings(
+        trades["买入日"], trades["卖出日"], bm["月"].tolist())
+    bm["累计笔数"] = bm["笔数"].cumsum()
     buse = _capital_usage(trades["买入日"], trades["卖出日"], capital, trades["ret"])
     bm["累计收益率"] = bm["累计盈亏"] / buse["所需资金"]
+    del bm["累计笔数"]
+    bm["累计笔数"] = bm["笔数"].cumsum()
     bret = trades["ret"]
     benchmark = {
         "机构": "全样本（每份都买）",
@@ -1816,7 +1824,8 @@ def institution_curves(
         "提前离场笔数": int(trades["提前离场"].sum()),
         "平均持有日": round(float(trades["持有交易日"].mean()), 1),
         "最大回撤": _max_drawdown(bm["累计盈亏"].to_numpy(), buse["所需资金"]),
-        "曲线": _records(bm[["月", "累计盈亏", "累计超额", "累计收益率", "累计笔数"]]),
+        "曲线": _records(bm[["月", "累计盈亏", "累计超额", "累计收益率",
+                              "累计笔数", "月末持股", "月内峰值持股"]]),
     }
 
     # 超过基准的家数：这个数字若接近半数，说明机构间差异与随机无异。
@@ -1892,6 +1901,46 @@ def _annualized(total_return: float, years: float) -> float | None:
     if years <= 0 or total_return <= -1:
         return None
     return (1 + total_return) ** (1 / years) - 1
+
+
+def _concurrency_at(buys, sells, at_dates) -> list[int]:
+    """给定时点上的同时持股数。
+
+    一笔在 [买入日, 卖出日] **闭区间**内算持有——卖出当日仍在手，
+    收盘才成交。故时点 D 的持股数 = (买入日 ≤ D 的笔数) − (卖出日 < D 的笔数)。
+
+    用排序数组 + 二分（searchsorted）而非逐笔遍历：
+    曲线有上百个时点、交易有上万笔，逐笔比对是 O(n·m)。
+    """
+    import numpy as np
+
+    b = np.sort(pd.to_datetime(pd.Series(list(buys))).to_numpy())
+    sl = np.sort(pd.to_datetime(pd.Series(list(sells))).to_numpy())
+    d = pd.to_datetime(pd.Series(list(at_dates))).to_numpy()
+    opened = np.searchsorted(b, d, side="right")
+    closed = np.searchsorted(sl, d, side="left")
+    return (opened - closed).astype(int).tolist()
+
+
+def _monthly_holdings(buys, sells, months: list[str]) -> tuple[list[int], list[int]]:
+    """每月的「月末持股数」与「月内峰值持股数」。
+
+    ⚠️ 曾用按周采样求月内峰值，结果出现 `月内峰值 68 < 月末 79` ——
+    峰值不可能小于区间内任一点，那是采样漏掉高点造成的自相矛盾。
+    改为整段**按日**算一次再按月取最大：总天数不过数千，
+    一次向量化 searchsorted 就够，比逐月采样又快又不会漏。
+    """
+    lo = pd.to_datetime(pd.Series(list(buys))).min()
+    hi = pd.to_datetime(pd.Series(list(sells))).max()
+    days = pd.date_range(lo, hi, freq="D")
+    conc = pd.Series(_concurrency_at(buys, sells, days), index=days)
+
+    by_month = conc.groupby(conc.index.to_period("M"))
+    peak = by_month.max()
+    last = by_month.last()
+    idx = pd.PeriodIndex(months, freq="M")
+    return (last.reindex(idx).fillna(0).astype(int).tolist(),
+            peak.reindex(idx).fillna(0).astype(int).tolist())
 
 
 def _capital_usage(buys, sells, capital: float, rets=None) -> dict:
@@ -2097,8 +2146,13 @@ def institution_trades(
     wins = int((ret > 0).sum())
     total = float(trades["盈亏"].sum())
 
-    curve = trades.sort_values("发布日")[["发布日", "盈亏"]].copy()
+    curve = trades.sort_values("发布日")[["发布日", "盈亏", "买入日"]].copy()
     curve["累计"] = curve["盈亏"].cumsum()
+    # 该笔买入当日在手的持股数——鼠标悬停时显示，
+    # 让「这条线怎么涨的」与「当时压了几只」能对上
+    curve["持股数"] = _concurrency_at(trades["买入日"], trades["卖出日"],
+                                      curve["买入日"])
+    del curve["买入日"]
 
     summary = {
         "笔数": len(trades),
