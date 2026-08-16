@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.csg.watchdog</string>
+
+  <!-- 独立于每日链运行：由被监控者自己上报健康状态等于没有监控 -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/wwww/Documents/GitHub/CSG/.venv/bin/python</string>
+    <string>/Users/wwww/Documents/GitHub/CSG/scripts/watchdog.py</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/wwww/Documents/GitHub/CSG</string>
+
+  <!-- 每天 12:00 检查一次。频率不必高：它检测的是「已经停摆」，
+       不是「刚刚失败」——后者由每日链自身的非零退出码体现 -->
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Hour</key><integer>12</integer><key>Minute</key><integer>0</integer></dict>
+  </array>
+
+  <key>StandardOutPath</key>
+  <string>/Users/wwww/Documents/GitHub/CSG/logs/launchd_watchdog.out</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/wwww/Documents/GitHub/CSG/logs/launchd_watchdog.err</string>
+  <key>ProcessType</key><string>Background</string>
+</dict>
+</plist>

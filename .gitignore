@@ -1,30 +1,26 @@
-# 本地数据（可重新拉取，不入库）
-data/
-reports/
-
-# 密钥与本地配置
-.env
-config/secrets.yaml
-config/*.local.yaml
-
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-.venv/
-venv/
-.pytest_cache/
-.ruff_cache/
-.mypy_cache/
-
-# 编辑器 / 系统
-.vscode/
-.idea/
-.DS_Store
 
 # Jupyter
-.ipynb_checkpoints/
-
-# 注意：journal/ 刻意不忽略。
+# Python
 # 决策日志是本系统唯一不可再生的资产 —— 行情能重拉，你三年前为什么买某只股票不能。
+# 密钥与本地配置
+# 本地数据（可重新拉取，不入库）
+# 注意：journal/ 刻意不忽略。
+# 编辑器 / 系统
+*.egg-info/
+*.py[cod]
+.DS_Store
+.env
+.idea/
+.ipynb_checkpoints/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.venv/
+.vscode/
+__pycache__/
+config/*.local.yaml
+config/secrets.yaml
+data/
 logs/
+reports/
+venv/

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.csg.daily</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/wwww/Documents/GitHub/CSG/scripts/daily_chain.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/wwww/Documents/GitHub/CSG</string>
+
+  <!-- 一天两次：
+       07:30 抓昨夜披露的年报/季报（A股财报多在盘后与夜间公告）
+       19:30 抓当日盘后研报与行情
+       休眠错过的那次，launchd 会在唤醒后补跑一次（cron 会直接跳过） -->
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Hour</key><integer>7</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Hour</key><integer>19</integer><key>Minute</key><integer>30</integer></dict>
+  </array>
+
+  <key>StandardOutPath</key>
+  <string>/Users/wwww/Documents/GitHub/CSG/logs/launchd_daily.out</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/wwww/Documents/GitHub/CSG/logs/launchd_daily.err</string>
+
+  <!-- 采集是长任务且会独占 DuckDB 写锁，不能与自己并发 -->
+  <key>AbandonProcessGroup</key><false/>
+  <key>ProcessType</key><string>Background</string>
+</dict>
+</plist>
