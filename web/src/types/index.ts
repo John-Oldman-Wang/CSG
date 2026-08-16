@@ -267,3 +267,76 @@ export interface InstitutionStats {
   rows: InstitutionStatRow[];
   caveat: string;
 }
+
+export interface PoolTier {
+  tier: string;
+  name: string;
+  count: number;
+  desc: string;
+}
+
+export interface WatchlistRow {
+  code: string;
+  name: string | null;
+  industry: string | null;
+  tier: string;
+  added_at: string;
+  thesis: string | null;
+  core_assumptions: string | null;
+  falsification: string | null;
+  target_price: number | null;
+  in_position: boolean;
+  /** L1→L2 晋升的实质门槛：写不出证伪条件说明还没想清楚 */
+  falsification_count: number;
+}
+
+export interface PoolTiersResp {
+  tiers: PoolTier[];
+  l1_breakdown: { theme: string; industry_name: string; count: number }[];
+  watchlist: WatchlistRow[];
+  holdings: Record<string, unknown>[];
+  promotion_gate: string;
+  coverage: {
+    l1_researched: number;
+    l2_held: number;
+    /** 已持仓但未写假设——跳级买入的痕迹 */
+    held_not_watched: string[];
+  };
+}
+
+export interface PortfolioHolding {
+  code: string;
+  name: string | null;
+  industry: string | null;
+  shares: number;
+  cost_price: number;
+  price: number;
+  market_value: number;
+  cost_value: number;
+  weight: number;
+  pnl: number;
+  pnl_pct: number;
+  theme: string;
+}
+
+export interface PortfolioResp {
+  holdings: PortfolioHolding[];
+  violations: {
+    rule: string;
+    severity: string;
+    target: string;
+    current: number;
+    limit: number;
+    message: string;
+  }[];
+  summary: {
+    total_market_value: number;
+    total_cost: number;
+    pnl: number;
+    pnl_pct: number;
+    count: number;
+    count_limit: string;
+    industry_breakdown: { industry: string; weight: number }[];
+    theme_breakdown: { theme: string; weight: number }[];
+  } | null;
+}

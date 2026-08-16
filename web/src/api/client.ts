@@ -6,6 +6,8 @@ import type {
   HealthInfo,
   Institution,
   InstitutionStats,
+  PoolTiersResp,
+  PortfolioResp,
   ReportAnalysis,
   ReportFilters,
   ReportSearchResult,
@@ -135,6 +137,10 @@ export const api = {
     }
     return get<InstitutionStats>("/institution-stats", q);
   },
+
+  poolTiers: () => get<PoolTiersResp>("/pool-tiers"),
+
+  portfolio: () => get<PortfolioResp>("/portfolio"),
 
   watchlist: () => get<(WatchlistEntry & { name: string | null })[]>("/watchlist"),
 };

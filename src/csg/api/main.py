@@ -985,3 +985,180 @@ def valuation_screen(
                 "而那正是盈利即将下行之时。本表是候选名单，不是买入建议。"
             ),
         }
+
+
+# ----------------------------------------------------------------------
+# 股票池分级（机构投研流程的核心制度）
+# ----------------------------------------------------------------------
+
+@app.get("/api/pool-tiers")
+def pool_tiers() -> dict:
+    """四层股票池的构成与流转。
+
+    **这是机构投研流程中最值得复制的一条制度**：
+    标的必须逐级晋升，每级有明确的入池条件与产出要求，
+    不允许「看好就买」直接跳级。
+
+        L0 全市场    仅轻量数据，用于行业分位与市场水位，不做个股分析
+        L1 基础池    定期筛选的范围（能力圈内行业）
+        L2 观察池    已研究认可、写下证伪条件、等价格
+        L3 持仓      最高强度跟踪
+
+    L1→L2 的门槛是**写出证伪条件**——写不出说明还没真正想清楚，
+    此时正确的动作是继续研究而非买入。这条门槛是整个流程的关键。
+    """
+    with read_db() as db:
+        l1 = universe.resolve_universe(db)
+        l2 = db.query("""
+            SELECT w.code, b.name, i.industry_name AS industry, w.tier,
+                   CAST(w.added_at AS VARCHAR) AS added_at,
+                   w.thesis, w.core_assumptions, w.falsification, w.target_price
+            FROM watchlist w
+            LEFT JOIN stock_basic b ON b.code = w.code
+            LEFT JOIN industry_member i ON i.code = w.code
+              AND i.taxonomy = 'em_industry'
+            ORDER BY w.tier DESC, w.code
+        """)
+        l3 = db.query("""
+            SELECT p.code, b.name, i.industry_name AS industry,
+                   p.shares, p.cost_price,
+                   (SELECT close FROM daily_quote q WHERE q.code = p.code
+                    ORDER BY trade_date DESC LIMIT 1) AS price
+            FROM position p
+            LEFT JOIN stock_basic b ON b.code = p.code
+            LEFT JOIN industry_member i ON i.code = p.code
+              AND i.taxonomy = 'em_industry'
+        """)
+        l0_count = db.query("SELECT count(*) AS n FROM stock_basic")["n"].iloc[0]
+
+        # 持仓的市值与权重在查询时计算，避免落盘后过期
+        holdings: list[dict] = []
+        if not l3.empty:
+            l3["market_value"] = l3["shares"] * l3["price"]
+            total = l3["market_value"].sum()
+            l3["weight"] = l3["market_value"] / total if total else 0.0
+            l3["pnl_pct"] = l3["price"] / l3["cost_price"] - 1
+            l3["cost_value"] = l3["shares"] * l3["cost_price"]
+            holdings = _records(l3.sort_values("weight", ascending=False))
+
+        # 各层之间的归属关系：观察池中有多少已建仓、基础池中有多少已研究
+        held = set(l3["code"]) if not l3.empty else set()
+        watched = set(l2["code"]) if not l2.empty else set()
+
+        watchlist_rows = _records(l2)
+        for r in watchlist_rows:
+            r["in_position"] = r["code"] in held
+            # 证伪条件数量——L1→L2 晋升的实质门槛
+            r["falsification_count"] = len(
+                [c for c in str(r.get("falsification") or "").split("；") if c.strip()])
+
+        return {
+            "tiers": [
+                {"tier": "L0", "name": "全市场", "count": int(l0_count),
+                 "desc": "仅轻量数据，用于行业分位与市场水位，不做个股分析"},
+                {"tier": "L1", "name": "基础池", "count": len(l1),
+                 "desc": "能力圈内行业，定期筛选的范围"},
+                {"tier": "L2", "name": "观察池", "count": len(l2),
+                 "desc": "已研究认可、写下证伪条件、等价格"},
+                {"tier": "L3", "name": "持仓", "count": len(l3),
+                 "desc": "最高强度跟踪"},
+            ],
+            "l1_breakdown": _records(
+                l1.groupby(["theme", "industry_name"]).size()
+                  .reset_index(name="count")) if not l1.empty else [],
+            "watchlist": watchlist_rows,
+            "holdings": holdings,
+            "promotion_gate": (
+                "L1→L2 的门槛是写出证伪条件。写不出说明还没真正想清楚，"
+                "此时正确的动作是继续研究而非买入。"
+            ),
+            "coverage": {
+                "l1_researched": len(watched),
+                "l2_held": len(watched & held),
+                "held_not_watched": sorted(held - watched),
+            },
+        }
+
+
+@app.get("/api/portfolio")
+def portfolio() -> dict:
+    """持仓组合与约束检查。
+
+    **输出是「是否违反你已定的规则」，不是「建议买多少」。**
+
+    系统没有下单权限，故违规提示可被无视——但每次无视都会留下记录，
+    供复盘时统计破戒次数。机构的制度优势正在于此：
+    把「不能做什么」写进系统，情绪上头时有东西拦住。
+    """
+    from csg.decision.constraints import load_config
+
+    with read_db() as db:
+        df = db.query("""
+            SELECT p.code, b.name, i.industry_name AS industry,
+                   p.shares, p.cost_price,
+                   (SELECT close FROM daily_quote q WHERE q.code = p.code
+                    ORDER BY trade_date DESC LIMIT 1) AS price
+            FROM position p
+            LEFT JOIN stock_basic b ON b.code = p.code
+            LEFT JOIN industry_member i ON i.code = p.code
+              AND i.taxonomy = 'em_industry'
+        """)
+        if df.empty:
+            return {"holdings": [], "violations": [], "summary": None}
+
+        df["market_value"] = df["shares"] * df["price"]
+        df["cost_value"] = df["shares"] * df["cost_price"]
+        total_mv = float(df["market_value"].sum())
+        total_cost = float(df["cost_value"].sum())
+        df["weight"] = df["market_value"] / total_mv
+        df["pnl"] = df["market_value"] - df["cost_value"]
+        df["pnl_pct"] = df["price"] / df["cost_price"] - 1
+
+        themes = universe.target_industries()
+        ind_to_theme = {n: t for t, names in themes.items() for n in names}
+        df["theme"] = df["industry"].map(ind_to_theme).fillna("other")
+
+        cfg = load_config()
+        s, c, p = cfg["single_position"], cfg["concentration"], cfg["portfolio"]
+        violations: list[dict] = []
+
+        for _, r in df.iterrows():
+            if r["weight"] > s["max_weight"]:
+                violations.append({
+                    "rule": "单票上限", "severity": "block",
+                    "target": f"{r['code']} {r['name']}",
+                    "current": round(float(r["weight"]), 4),
+                    "limit": s["max_weight"],
+                    "message": f"{r['name']} 权重 {r['weight']:.1%}，"
+                               f"超出上限 {s['max_weight']:.0%}"})
+
+        for key, limit, label in [
+            ("industry", c["max_industry_weight"], "单行业上限"),
+            ("theme", c["max_theme_weight"], "单主题上限"),
+        ]:
+            grouped = df.groupby(key)["weight"].sum()
+            for name, w in grouped.items():
+                if w > limit:
+                    violations.append({
+                        "rule": label, "severity": "block", "target": str(name),
+                        "current": round(float(w), 4), "limit": limit,
+                        "message": f"{name} 合计 {w:.1%}，超出上限 {limit:.0%}"})
+
+        return {
+            "holdings": _records(df.sort_values("weight", ascending=False)),
+            "violations": violations,
+            "summary": {
+                "total_market_value": round(total_mv, 2),
+                "total_cost": round(total_cost, 2),
+                "pnl": round(total_mv - total_cost, 2),
+                "pnl_pct": round(total_mv / total_cost - 1, 4),
+                "count": len(df),
+                "count_limit": f"{p['min_count']}–{p['max_count']}",
+                "industry_breakdown": _records(
+                    df.groupby("industry")["weight"].sum()
+                      .reset_index(name="weight").sort_values("weight", ascending=False)),
+                "theme_breakdown": _records(
+                    df.groupby("theme")["weight"].sum()
+                      .reset_index(name="weight").sort_values("weight", ascending=False)),
+            },
+        }

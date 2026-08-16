@@ -3,6 +3,7 @@ import { useTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 import Dashboard from "@/pages/Dashboard";
 import InstitutionStats from "@/pages/InstitutionStats";
+import PoolTiers from "@/pages/PoolTiers";
 import ReportAnalysis from "@/pages/ReportAnalysis";
 import Reports from "@/pages/Reports";
 import StockDetail from "@/pages/StockDetail";
@@ -12,6 +13,7 @@ import Validations from "@/pages/Validations";
 
 const NAV = [
   { to: "/", label: "总览", end: true },
+  { to: "/pool", label: "股票池" },
   { to: "/tasks", label: "复核任务" },
   { to: "/reports", label: "研报检索" },
   { to: "/institutions", label: "机构胜率" },
@@ -60,6 +62,7 @@ export default function App() {
       <main className="flex-1 overflow-auto p-5">
         <Routes>
           <Route path="/" element={<Dashboard />} />
+          <Route path="/pool" element={<PoolTiers />} />
           <Route path="/tasks" element={<Tasks />} />
           <Route path="/tasks/:taskId" element={<TaskDetail />} />
           <Route path="/stocks/:code" element={<StockDetail />} />

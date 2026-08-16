@@ -164,3 +164,18 @@ CREATE TABLE IF NOT EXISTS validation_conclusion (
 );
 
 CREATE INDEX IF NOT EXISTS idx_vres_run ON validation_result(run_id, view_name);
+
+-- ============================================================
+-- 持仓
+-- ============================================================
+
+-- 只记录事实（股数与成本），不记录任何判断。
+-- 权重、浮盈亏由查询时结合最新行情计算——避免落盘后过期。
+CREATE TABLE IF NOT EXISTS position (
+    code         VARCHAR PRIMARY KEY,
+    shares       BIGINT NOT NULL,
+    cost_price   DOUBLE NOT NULL,   -- 每股成本
+    opened_at    DATE,
+    updated_at   DATE NOT NULL,
+    notes        VARCHAR
+);
