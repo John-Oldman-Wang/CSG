@@ -516,8 +516,6 @@ def main() -> None:
     app()
 
 
-if __name__ == "__main__":
-    main()
 
 
 @app.command("daily")
@@ -592,3 +590,17 @@ def daily(
     stamp.parent.mkdir(exist_ok=True)
     stamp.write_text(str(int(_time.time())))
     console.print("\n[green]每日链全部成功[/green]")
+
+
+# ⚠️ 入口必须留在**文件最末**。
+#
+# 事故（2026-08-17）：该块原在文件中部，其后又追加了 `@app.command("daily")`。
+# 用 `python -m csg.cli daily` 运行时，模块自上而下执行，到这里就把 app 跑起来了，
+# 而 daily 尚未注册 —— 报「No such command 'daily'」。
+# 诡异之处在于 `uv run csg daily` 完全正常：入口点走的是 `csg.cli:app`，
+# 模块被完整导入后才调用，不受位置影响。
+#
+# launchd 的 plist 用的正是 `-m` 形式。若不是手测了一次，
+# 定时任务会再次静默失败，而表现与 TCC 那次一模一样。
+if __name__ == "__main__":
+    main()
