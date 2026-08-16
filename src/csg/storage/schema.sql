@@ -186,8 +186,16 @@ CREATE TABLE IF NOT EXISTS research_report (
     rating         VARCHAR,            -- 东财评级：买入/增持/中性/减持
     industry       VARCHAR,
     pdf_url        VARCHAR,
+    researcher     VARCHAR,            -- 研究员姓名（同花顺有，东财无）
+    -- 数据源：'em' 东方财富 / 'ths' 同花顺。
+    --
+    -- **不做跨源去重。** 同一份研报两边都收到时，标题措辞常有差异
+    -- （东财含机构前缀、同花顺不含；副标题取舍也不同），强行合并
+    -- 只会丢信息。保留双份的收益是可交叉校验：同一 (code, 日期, 机构)
+    -- 若两源评级不一致，说明至少一边解析错了——这是免费的质量检查。
+    source         VARCHAR NOT NULL DEFAULT 'em',
     snapshot_date  DATE NOT NULL,      -- 本行的采集日期
-    PRIMARY KEY (code, publish_date, institution, title)
+    PRIMARY KEY (code, publish_date, institution, title, source)
 );
 
 -- 盈利预测（长表）。
@@ -210,8 +218,10 @@ CREATE TABLE IF NOT EXISTS research_forecast (
     forecast_year  INTEGER NOT NULL,
     eps            DOUBLE,
     pe             DOUBLE,
+    researcher     VARCHAR,
+    source         VARCHAR NOT NULL DEFAULT 'em',
     snapshot_date  DATE NOT NULL,
-    PRIMARY KEY (code, publish_date, institution, forecast_year, snapshot_date)
+    PRIMARY KEY (code, publish_date, institution, forecast_year, snapshot_date, source)
 );
 
 -- ============================================================

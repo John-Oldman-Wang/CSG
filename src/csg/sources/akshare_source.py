@@ -350,6 +350,8 @@ def fetch_research_reports(code: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     rep["rating"] = df.get("东财评级")
     rep["industry"] = df.get("行业")
     rep["pdf_url"] = df.get("报告PDF链接")
+    rep["researcher"] = None          # 东财接口不提供研究员姓名，同花顺有
+    rep["source"] = "em"
     rep["snapshot_date"] = today
     rep = rep.dropna(subset=["publish_date"]).drop_duplicates(
         ["code", "publish_date", "institution", "title"])
@@ -372,6 +374,8 @@ def fetch_research_reports(code: str) -> tuple[pd.DataFrame, pd.DataFrame]:
                 "institution": r["institution"],
                 "forecast_year": int(year),
                 "eps": pd.to_numeric(r[eps_col], errors="coerce"),
+                "researcher": None,
+                "source": "em",
                 "pe": pd.to_numeric(r.get(pe_col), errors="coerce")
                      if pe_col in df.columns else None,
                 "snapshot_date": today,

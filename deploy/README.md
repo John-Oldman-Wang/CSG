@@ -56,3 +56,64 @@ launchctl unload ~/Library/LaunchAgents/com.csg.watchdog.plist
 
 采集期间 DuckDB 写锁独占，API 返回 503、前端显示「数据更新中」。
 这是选型代价不是 bug，不要试图绕过（CLAUDE.md 第 5 条）。
+
+---
+
+## ⚠️ 事故：launchd 被 macOS TCC 拦住（2026-08-16 首次触发即失败）
+
+首次自动运行的结果：
+
+```
+com.csg.daily: runs = 1, last exit code = 126
+logs/launchd_daily.err:
+  shell-init: getcwd: cannot access parent directories: Operation not permitted
+  /bin/bash: .../scripts/daily_chain.sh: Operation not permitted
+```
+
+**原因不是脚本、权限位或路径**（`chmod +x` 已加，手动执行正常）。
+macOS 对 `~/Documents`、`~/Desktop`、`~/Downloads` 有 TCC 隐私保护，
+**launchd 启动的进程默认无权访问**。本仓库位于 `~/Documents/GitHub/CSG`，
+于是 launchd 连脚本都读不到，退出码 126。
+
+**看门狗同样失效**：它也在 `~/Documents` 下，12:00 触发时会以同样方式挂掉。
+即：专门用来发现静默失效的东西，自己正在静默失效。这类「监控与被监控者
+共享同一失效模式」的问题，唯一的防法是让监控依赖更少的东西——
+而 TCC 是进程级的，同一目录下做不到。
+
+### 两个修法，二选一
+
+**方案 A：授予 `/bin/bash` 完全磁盘访问权限**（快，但授权面偏大）
+
+    系统设置 → 隐私与安全性 → 完全磁盘访问权限 → 「+」
+    → Command+Shift+G 输入 /bin/bash → 添加并打开开关
+    对 .venv/bin/python 重复一次（看门狗直接调它，不经 bash）
+
+副作用：此后**任何** bash 脚本都获得完全磁盘访问权，包括你无意中执行的。
+
+**方案 B：把仓库移出受保护目录**（推荐，一劳永逸）
+
+```bash
+mkdir -p ~/Projects && mv ~/Documents/GitHub/CSG ~/Projects/CSG
+cd ~/Projects/CSG && sed -i '' 's|/Users/wwww/Documents/GitHub/CSG|/Users/wwww/Projects/CSG|g' \
+  deploy/com.csg.*.plist scripts/daily_chain.sh
+cp deploy/com.csg.*.plist ~/Library/LaunchAgents/
+launchctl unload ~/Library/LaunchAgents/com.csg.daily.plist
+launchctl unload ~/Library/LaunchAgents/com.csg.watchdog.plist
+launchctl load ~/Library/LaunchAgents/com.csg.daily.plist
+launchctl load ~/Library/LaunchAgents/com.csg.watchdog.plist
+```
+
+`~/Projects` 不在 TCC 保护范围内，此后不再需要任何授权。
+git remote 不受影响；`.claude/launch.json` 若有绝对路径需一并改。
+
+### 验证修好了
+
+```bash
+launchctl start com.csg.daily
+sleep 20 && cat logs/launchd_daily.err     # 应为空
+tail -f logs/daily_*.log                   # 应有内容
+launchctl print gui/$(id -u)/com.csg.daily | grep 'last exit code'   # 应为 0
+```
+
+**exit code 126 = 找到了但无法执行**，几乎总是 TCC；
+**127 = 找不到**，那才是路径问题。两者不要混淆。

@@ -23,6 +23,7 @@ import pandas as pd
 
 from csg.sources import akshare_source as aks
 from csg.sources import baostock_source as bss
+from csg.sources import ths_source as ths
 from csg.storage import Database
 
 log = logging.getLogger(__name__)
@@ -294,6 +295,7 @@ class Ingestor:
         *,
         refresh_days: int = 7,
         force: bool = False,
+        source: str = "em",
     ) -> dict[str, int]:
         """研报与盈利预测。
 
@@ -302,38 +304,44 @@ class Ingestor:
         这是积累「一致预期随时间变动」序列的唯一途径，而该序列
         无法向历史回溯获取（实测 2018-2023 年研报的预测字段全为空）。
         """
+        # 水位按数据源分开记：两个源的覆盖面与更新节奏不同，
+        # 共用一个水位会让先跑的那个把后跑的整体跳过。
+        ds = "research_report" if source == "em" else f"research_report_{source}"
+        fetch = (aks.fetch_research_reports if source == "em"
+                 else ths.fetch_research)
+
         stats = {"ok": 0, "skipped": 0, "failed": 0, "reports": 0, "forecasts": 0}
         today = dt.date.today()
 
         for i, code in enumerate(codes, 1):
             if not force:
-                wm = self.db.get_watermark("research_report", code)
+                wm = self.db.get_watermark(ds, code)
                 if wm is not None and (today - wm).days < refresh_days:
                     stats["skipped"] += 1
                     continue
 
             try:
-                rep, fc = aks.fetch_research_reports(code)
+                rep, fc = fetch(code)
                 if rep.empty:
-                    self.db.set_watermark("research_report", code,
+                    self.db.set_watermark(ds, code,
                                           last_success_date=today, status="ok")
                     stats["skipped"] += 1
                     continue
 
                 stats["reports"] += self.db.upsert(
                     "research_report", rep,
-                    ["code", "publish_date", "institution", "title"])
+                    ["code", "publish_date", "institution", "title", "source"])
                 if not fc.empty:
                     stats["forecasts"] += self.db.upsert(
                         "research_forecast", fc,
                         ["code", "publish_date", "institution",
-                         "forecast_year", "snapshot_date"])
+                         "forecast_year", "snapshot_date", "source"])
 
-                self.db.set_watermark("research_report", code,
+                self.db.set_watermark(ds, code,
                                       last_success_date=today, status="ok")
                 stats["ok"] += 1
             except Exception as exc:  # noqa: BLE001
-                self.db.set_watermark("research_report", code, status="failed",
+                self.db.set_watermark(ds, code, status="failed",
                                       error=str(exc)[:300])
                 stats["failed"] += 1
                 log.warning("[%d/%d] %s 研报失败: %s", i, len(codes), code, exc)

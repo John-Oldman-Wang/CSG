@@ -122,19 +122,35 @@ def sync_financials(
 def sync_research(
     limit: Annotated[int, typer.Option(help="仅同步前 N 只，用于试跑")] = 0,
     force: Annotated[bool, typer.Option(help="忽略水位，全量重拉")] = False,
+    source: Annotated[str, typer.Option(help="em=东方财富 / ths=同花顺")] = "em",
     verbose: bool = True,
 ) -> None:
-    """研报与盈利预测（约 202 条/只，35 分钟全量）。
+    """研报与盈利预测。
+
+    两个数据源覆盖的机构**不同**，都要跑：
+
+      em   东方财富。约 202 条/只。**不含任何头部券商**
+           （中信/中金/华泰/招商/广发/国君/海通 全缺）。
+      ths  同花顺 F10。条数多约 30%，含华泰、东方、中国银河；
+           其盈利预测页另有招商、广发。间隔 3 秒，更保守。
+
+    水位按源分开记录，两者互不干扰。同一份研报两边都收到时**不去重**，
+    保留双份以便交叉校验评级是否一致。
 
     每次采集保留快照：历史盈利预测无法回溯获取，
     只能从现在开始积累一致预期的时间序列。
     """
+    if source not in {"em", "ths"}:
+        console.print("[red]source 须为 em 或 ths[/red]")
+        raise typer.Exit(1)
     _setup_logging(verbose)
+    per = 3.5 if source == "em" else 6.5  # ths 两个页面 × 3 秒
     with open_db(DB_PATH) as db:
         codes = _pool_codes(db, limit or None)
-        console.print(f"目标 {len(codes)} 只，预计 {len(codes) * 3.5 / 60:.0f} 分钟")
-        stats = Ingestor(db).sync_research(codes, force=force)
-    console.print(f"[green]研报完成[/green] {stats}")
+        console.print(f"[{source}] 目标 {len(codes)} 只，"
+                      f"预计 {len(codes) * per / 60:.0f} 分钟")
+        stats = Ingestor(db).sync_research(codes, force=force, source=source)
+    console.print(f"[green]研报完成[{source}][/green] {stats}")
 
 
 @sync_app.command("valuations")
