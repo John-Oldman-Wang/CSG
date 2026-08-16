@@ -1478,6 +1478,20 @@ def institution_pnl(
     }
 
 
+# A 股最小交易单位为 1 手 = 100 股，买入必须整手。
+#
+# **这不是精度问题，是它在悄悄改变回测结论。** 实测（单笔 1 万元，20 日）：
+#   - 22.78%（4096/17984）的交易买不起 1 手而**完全无法建仓**，
+#     这些股票买入价中位数 182 元
+#   - 被排除的这批平均收益 +0.284%，能买得起的 +1.547%，
+#     即「1 万元」这个参数偶然帮你躲开了一批差票，让结果好看 +0.29pp
+#   - 可建仓的部分向下取整后实投中位 8740 元，另有 16.14% 资金闲置
+#
+# 结论：必须建模。否则回测结果依赖于一个你没意识到自己在用的隐含筛选器——
+# 若真拿 5 万一笔（几乎什么都买得起），结果反而会变差。
+LOT = 100
+
+
 # ======================================================================
 # 「跟着研报买」的入场规则
 # ======================================================================
@@ -1659,6 +1673,7 @@ def institution_curves(
     capital: float = 10000,
     min_trades: int = 100,
     bench_index: str = "000300",
+    round_lot: bool = True,
     buy: Annotated[str, Query(pattern="^(strict|bullish)$")] = "bullish",
     exit_signal: Annotated[
         str, Query(pattern="^(none|bearish|downgrade|any_downgrade)$")] = "none",
@@ -1690,7 +1705,10 @@ def institution_curves(
                    x.rn - e.ern < {horizon} AS 提前离场,
                    -- 同窗口指数收益：把「市场怎么走」从「研报选得准不准」里剥掉。
                    -- 缺了它，牛市里任何策略都赚钱，看不出研报有没有贡献。
-                   (ix.close / ib.close) - 1 AS idx_ret
+                   (ix.close / ib.close) - 1 AS idx_ret,
+                   e.buy_px AS 买入价,
+                   -- 整手数与实投：买不起 1 手的在 Python 侧剔除
+                   floor({capital} / (e.buy_px * {LOT})) AS lots
             FROM entry e
             JOIN mx ON mx.code = e.code
             {join_sig}
@@ -1707,13 +1725,25 @@ def institution_curves(
         return {"horizon": horizon, "capital": capital, "institutions": []}
 
     trades["月"] = pd.to_datetime(trades["publish_date"]).dt.to_period("M").astype(str)
-    trades["盈亏"] = trades["ret"] * capital
+
+    # 整手约束：单笔金额买不起 1 手的直接无法建仓（不是少买，是买不了）
+    skipped_unaffordable = 0
+    if round_lot:
+        skipped_unaffordable = int((trades["lots"] < 1).sum())
+        trades = trades[trades["lots"] >= 1].copy()
+        if trades.empty:
+            return {"horizon": horizon, "capital": capital, "institutions": []}
+        trades["实投"] = trades["lots"] * LOT * trades["买入价"]
+    else:
+        trades["实投"] = float(capital)
+
+    trades["盈亏"] = trades["ret"] * trades["实投"]
     # 同窗口超额 = 个股收益 − 同期指数收益。
     # 这是唯一能回答「研报有没有价值」的口径：它把市场涨跌整个剥离，
     # 剩下的才是选股贡献。指数数据缺失的交易按 0 处理（不虚构超额）。
     trades["idx_ret"] = trades["idx_ret"].fillna(0.0)
     trades["超额"] = trades["ret"] - trades["idx_ret"]
-    trades["超额盈亏"] = trades["超额"] * capital
+    trades["超额盈亏"] = trades["超额"] * trades["实投"]
 
     out = []
     for inst, g in trades.groupby("机构"):
@@ -1870,6 +1900,10 @@ def institution_curves(
         "capital": capital,
         "min_trades": min_trades,
         "bench_index": bench_index,
+        "round_lot": round_lot,
+        # 「买不起 1 手」的笔数。这个数越大，回测结果越依赖单笔金额这个隐含筛选器
+        "买不起笔数": skipped_unaffordable,
+        "实投均值": float(trades["实投"].mean()),
         "indexes": index_lines,
         "buy": buy,
         "exit_signal": exit_signal,

@@ -266,7 +266,21 @@ export function InstitutionCurves({ onPick }: { onPick?: (institution: string) =
       )}
 
       <p className="mb-2 text-[var(--color-muted)] text-xs leading-relaxed">
-        {data.entry_rule}。<br />
+        {data.entry_rule}。
+        {data.round_lot && (
+          <>
+            {" "}
+            按 A 股整手成交（1 手 = 100 股）， 其中 <b className="num">{data.买不起笔数}</b>{" "}
+            笔因 1 万元买不起 1 手而
+            <b>完全无法建仓</b>（这些股票股价多在百元以上）； 可建仓部分向下取整后实投均值{" "}
+            <b className="num">{data.实投均值.toFixed(0)}</b> 元。
+            <span className="text-[var(--color-p1)]">
+              {" "}
+              ⚠️ 单笔金额因此成为一个隐含筛选器——改成 5 万一笔会买进更多高价股， 结果未必更好。
+            </span>
+          </>
+        )}
+        <br />
         离场：{data.exit_rule}，每份投入 1 万元。
         <br />
         <b>收益率的分母是「峰值同时持仓 × 1 万」</b>，不是「1 万 × 笔数」——
