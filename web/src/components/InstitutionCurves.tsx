@@ -217,6 +217,25 @@ export function InstitutionCurves({ onPick }: { onPick?: (institution: string) =
         跟着每家机构买的累计曲线
       </CardTitle>
 
+      {/* 样本缺口必须常驻，不能折叠：读者每看一眼这张图，
+          都在无意识地把它当成「券商研报的表现」，而它不是。 */}
+      <div className="mb-3 rounded border border-[var(--color-p0)]/40 bg-[var(--color-p0)]/5 p-3">
+        <div className="font-medium text-[var(--color-p0)] text-sm">⚠️ 样本不含任何头部券商</div>
+        <p className="mt-1 text-[var(--color-muted)] text-xs leading-relaxed">
+          数据源为{data.sample_caveat.source}，其中
+          <b className="text-[var(--color-fg)]"> {data.sample_caveat.missing.join(" / ")} </b>
+          全部缺失。已直接调接口核对：宁德时代接口返回 469 条、库中 469 条——
+          <b>缺在源头，不是采集遗漏</b>。
+          推断因其研究是卖给付费机构客户的产品，不授权免费渠道转发；
+          中小券商则把东财当获客渠道。
+          <br />
+          <b className="text-[var(--color-p0)]">
+            因此本页所有结论只适用于「东财免费渠道的中小券商」，
+            不可推广为「券商研报无价值」——头部券商的研究我们从未观察到过。
+          </b>
+        </p>
+      </div>
+
       <div className="mb-3 flex flex-wrap items-end gap-4 border-[var(--color-border)] border-b pb-3">
         <label className="block">
           <span className="mb-1 block text-[var(--color-muted)] text-xs">买入信号</span>

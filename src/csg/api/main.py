@@ -1907,6 +1907,7 @@ def institution_curves(
         "indexes": index_lines,
         "buy": buy,
         "exit_signal": exit_signal,
+        "sample_caveat": RESEARCH_SAMPLE_CAVEAT,
         "entry_rule": (
             f"仅买{'「买入」' if buy == 'strict' else '看多（买入/增持）'}评级；"
             "发布次日开盘价买入，开盘涨停顺延，连续涨停超 5 日放弃"),
@@ -2257,6 +2258,28 @@ def institution_trades(
         "curve": _records(curve),
         "trades": _records(trades),
     }
+
+
+# 研报样本的系统性缺口，随接口一并返回，供前端常驻提示。
+#
+# 数据源 ak.stock_research_report_em（东财个股研报）**不含任何头部券商**：
+# 中信 / 中金 / 华泰 / 国泰君安 / 招商 / 广发 / 海通 / 兴业 / 申万 / 东方 全部缺失。
+# 已直接调接口核对：宁德时代接口返回 469 条、库中 469 条，采集无遗漏，缺在源头。
+#
+# 推断：头部券商研究是卖给付费机构客户的产品，不授权免费渠道转发；
+# 中小券商把东财当获客渠道。即样本按「研究能否卖钱」被系统性筛选过。
+#
+# 后果：本项目所有研报结论只适用于**东财免费渠道的中小券商**。
+# 不可由此推出「券商研报无价值」——头部券商的研究我们从未观察到过。
+RESEARCH_SAMPLE_CAVEAT = {
+    "source": "东方财富个股研报（ak.stock_research_report_em）",
+    "missing": ["中信证券", "中金公司", "华泰证券", "国泰君安", "招商证券",
+                "广发证券", "海通证券", "兴业证券", "申万宏源", "东方证券"],
+    "note": ("数据源不含任何头部券商——已核对为源头缺失而非采集遗漏。"
+             "推断因其研究是付费机构客户产品，不授权免费渠道转发。"
+             "故本页结论仅适用于东财免费渠道的中小券商，"
+             "不可推广为「券商研报无价值」。"),
+}
 
 
 @app.get("/api/institution-options")

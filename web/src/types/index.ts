@@ -535,6 +535,8 @@ export interface InstitutionCurvesResp {
   capital: number;
   min_trades: number;
   bench_index: string;
+  /** 研报样本的系统性缺口：数据源不含任何头部券商 */
+  sample_caveat: { source: string; missing: string[]; note: string };
   /** 是否按 A 股整手（1 手 = 100 股）建模 */
   round_lot: boolean;
   /** 单笔金额买不起 1 手而无法建仓的笔数。越大说明结果越依赖单笔金额这个隐含筛选器 */
