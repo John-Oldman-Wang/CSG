@@ -93,13 +93,23 @@ plist 直接调 `.venv/bin/python -m csg.cli daily`，**不再经过 `/bin/bash`
       /Users/wwww/Documents/GitHub/CSG/.venv/bin/python
     → 添加并打开开关
 
-授权面就是这个项目专属的解释器——它只被本项目使用，
-爆炸半径仅限本项目。**不要给 `/bin/bash` 授权**：那会让此后
-任何 bash 脚本（包括你无意中执行的）都获得完全磁盘访问权。
+⚠️ **授权范围没有想象中那么窄，说清楚**：`.venv/bin/python` 是符号链接，
 
-⚠️ 重建 venv（`uv sync --reinstall` 等）会替换该二进制文件，
-TCC 授权按路径+签名记录，**重建后需重新授权**。届时症状同样是
-exit 126，按本节排查。
+    .venv/bin/python → ~/.local/share/uv/python/cpython-3.12.14-.../bin/python3.12
+
+TCC 按**解析后的真实路径**授权，故实际获得权限的是 uv 托管的共享解释器，
+影响面是**所有使用该 Python 版本的 uv 项目**，不是仅本项目。
+
+即便如此仍明显优于给 `/bin/bash` 授权：
+
+| 授权对象 | 影响面 |
+|---|---|
+| `/bin/bash` | 你运行的**每一个** shell 脚本 |
+| uv 的 cpython-3.12.14 | 用该版本的 uv 项目（数量由你自己控制） |
+
+⚠️ `uv` 升级 Python 小版本后路径会变（3.12.14 → 3.12.x），
+TCC 授权随之失效，**需重新授权**。届时症状与本节完全相同：
+exit 126、无日志。看到这个组合先查 TCC，别再从头排查代码。
 
 **方案 B：授予 `/bin/bash` 完全磁盘访问权限**（不推荐，见上）
 
