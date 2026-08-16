@@ -2123,11 +2123,18 @@ def institution_trades(
     institution: str,
     horizon: int = 20,
     capital: float = 10000,
+    round_lot: bool = True,
     buy: Annotated[str, Query(pattern="^(strict|bullish)$")] = "bullish",
     exit_signal: Annotated[
         str, Query(pattern="^(none|bearish|downgrade|any_downgrade)$")] = "none",
 ) -> dict:
     """某机构的每一份研报作为一笔交易，逐笔列出。
+
+    `round_lot=True` 时按 A 股整手（1 手 = 100 股）建模。
+    **买不起 1 手的交易仍然返回**，标记 `无法建仓=true`、盈亏为 0，
+    并从汇总统计中剔除——它们必须看得见：
+    这类交易占 22.78%，是单笔金额这个隐含筛选器的直接证据，
+    静默丢弃等于把筛选器藏起来。
 
     入场规则与 `/api/institution-curves` 完全一致（见 ENTRY_CTE）：
     发布次日开盘价买入，开盘涨停顺延，连续涨停超 5 日放弃。
@@ -2152,13 +2159,13 @@ def institution_trades(
                    e.rating              AS 评级,
                    e.buy_date            AS 买入日,
                    e.buy_px              AS 买入价,
+                   floor({capital} / (e.buy_px * {LOT})) AS 手数,
                    e.deferred            AS 顺延,
                    x.trade_date          AS 卖出日,
                    x.close               AS 卖出价,
                    x.rn - e.ern          AS 持有交易日,
                    x.rn - e.ern < {horizon} AS 提前离场,
                    (x.close * x.adj_factor / e.buy_adj) - 1 AS 收益率,
-                   ((x.close * x.adj_factor / e.buy_adj) - 1) * {capital} AS 盈亏,
                    abs((x.close * x.adj_factor / e.buy_adj)
                        - (x.close / e.buy_px)) > 0.001 AS 除权
             FROM entry e
@@ -2175,21 +2182,40 @@ def institution_trades(
         return {"institution": institution, "horizon": horizon,
                 "capital": capital, "summary": None, "trades": []}
 
-    use = _capital_usage(trades["买入日"], trades["卖出日"], capital, trades["收益率"])
-    ret = trades["收益率"]
-    wins = int((ret > 0).sum())
-    total = float(trades["盈亏"].sum())
+    # 整手：买不起 1 手的保留在表里但不计入统计
+    if round_lot:
+        trades["无法建仓"] = trades["手数"] < 1
+        trades["实投"] = (trades["手数"] * LOT * trades["买入价"]).where(
+            ~trades["无法建仓"], 0.0)
+    else:
+        trades["无法建仓"] = False
+        trades["实投"] = float(capital)
+    trades["盈亏"] = trades["收益率"] * trades["实投"]
 
-    curve = trades.sort_values("发布日")[["发布日", "盈亏", "买入日"]].copy()
+    live = trades[~trades["无法建仓"]]
+    if live.empty:
+        return {"institution": institution, "horizon": horizon, "capital": capital,
+                "round_lot": round_lot, "summary": None,
+                "trades": _records(trades)}
+
+    use = _capital_usage(live["买入日"], live["卖出日"], capital, live["收益率"])
+    ret = live["收益率"]
+    wins = int((ret > 0).sum())
+    total = float(live["盈亏"].sum())
+
+    curve = live.sort_values("发布日")[["发布日", "盈亏", "买入日"]].copy()
     curve["累计"] = curve["盈亏"].cumsum()
     # 该笔买入当日在手的持股数——鼠标悬停时显示，
     # 让「这条线怎么涨的」与「当时压了几只」能对上
-    curve["持股数"] = _concurrency_at(trades["买入日"], trades["卖出日"],
+    curve["持股数"] = _concurrency_at(live["买入日"], live["卖出日"],
                                       curve["买入日"])
     del curve["买入日"]
 
     summary = {
-        "笔数": len(trades),
+        "笔数": len(live),
+        # 买不起 1 手而无法建仓的笔数——不是「亏损」，是这笔交易不存在
+        "无法建仓笔数": int(trades["无法建仓"].sum()),
+        "实投均值": float(live["实投"].mean()),
         "总盈亏": total,
         # ⚠️ 不是 capital × 笔数。持有期满卖出后资金回笼，
         #    下一笔用的是同一笔钱；真正要准备的是**峰值同时持仓**。
@@ -2216,16 +2242,17 @@ def institution_trades(
         "最差": float(ret.min()),
         "盈亏比": (float(ret[ret > 0].mean() / abs(ret[ret < 0].mean()))
                    if (ret < 0).any() and (ret > 0).any() else None),
-        "含除权笔数": int(trades["除权"].sum()),
-        "涨停顺延笔数": int((trades["顺延"] > 0).sum()),
-        "提前离场笔数": int(trades["提前离场"].sum()),
-        "平均持有日": round(float(trades["持有交易日"].mean()), 1),
+        "含除权笔数": int(live["除权"].sum()),
+        "涨停顺延笔数": int((live["顺延"] > 0).sum()),
+        "提前离场笔数": int(live["提前离场"].sum()),
+        "平均持有日": round(float(live["持有交易日"].mean()), 1),
     }
 
     return {
         "institution": institution,
         "horizon": horizon,
         "capital": capital,
+        "round_lot": round_lot,
         "summary": summary,
         "curve": _records(curve),
         "trades": _records(trades),

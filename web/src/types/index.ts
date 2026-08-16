@@ -413,14 +413,26 @@ export interface TradeRow {
   盈亏: number;
   /** 持有期内发生除权除息：显示价格手算的涨幅与「收益率」不符，差额为分红送转 */
   除权: boolean;
+  /** 可买的整手数（1 手 = 100 股）。为 0 即买不起 */
+  手数: number;
+  /** 单笔金额买不起 1 手 —— 这笔交易根本不存在，不是亏损 */
+  无法建仓: boolean;
+  /** 向下取整后实际投入金额；无法建仓时为 0 */
+  实投: number;
+  持有交易日: number;
+  提前离场: boolean;
+  顺延: number;
 }
 
 export interface InstitutionTradesResp {
   institution: string;
   horizon: number;
   capital: number;
+  round_lot: boolean;
   summary: {
     笔数: number;
+    无法建仓笔数: number;
+    实投均值: number;
     总盈亏: number;
     /** 峰值同时持仓 × 单笔金额 —— 真正要准备的本金，非「单笔 × 笔数」 */
     占用资金: number;

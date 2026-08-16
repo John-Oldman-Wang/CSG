@@ -46,7 +46,7 @@ const GRID_THEMES = {
   }),
 } as const;
 
-const HORIZONS = [20, 50, 100];
+const HORIZONS = [5, 10, 20, 50, 100];
 
 type CurvePt = NonNullable<InstitutionTradesResp["curve"]>[number];
 
@@ -72,6 +72,7 @@ export default function InstitutionTrades() {
 
   const inst = params.get("inst") ?? "";
   const horizon = Number(params.get("h") ?? 20);
+  const roundLot = params.get("lot") !== "0";
 
   const set = (k: string, v: string) => {
     const next = new URLSearchParams(params);
@@ -88,18 +89,20 @@ export default function InstitutionTrades() {
   const chosen = inst || list.data?.[0]?.机构 || "";
 
   const { data, error, isFetching } = useQuery({
-    queryKey: ["institutionTrades", chosen, horizon],
-    queryFn: () => api.institutionTrades(chosen, horizon),
+    queryKey: ["institutionTrades", chosen, horizon, roundLot],
+    queryFn: () => api.institutionTrades(chosen, horizon, roundLot),
     enabled: !!chosen,
     placeholderData: keepPreviousData,
   });
 
-  const [onlyWin, setOnlyWin] = useState<"all" | "win" | "loss">("all");
+  const [onlyWin, setOnlyWin] = useState<"all" | "win" | "loss" | "blocked">("all");
 
   const rows = useMemo(() => {
     const t: TradeRow[] = data?.trades ?? [];
-    if (onlyWin === "win") return t.filter((r) => r.收益率 > 0);
-    if (onlyWin === "loss") return t.filter((r) => r.收益率 <= 0);
+    // 无法建仓的行既不算盈利也不算亏损——这笔交易根本不存在
+    if (onlyWin === "blocked") return t.filter((r) => r.无法建仓);
+    if (onlyWin === "win") return t.filter((r) => !r.无法建仓 && r.收益率 > 0);
+    if (onlyWin === "loss") return t.filter((r) => !r.无法建仓 && r.收益率 <= 0);
     return t;
   }, [data, onlyWin]);
 
@@ -137,6 +140,32 @@ export default function InstitutionTrades() {
         valueFormatter: (p: { value: number }) => p.value?.toFixed(2) ?? "—",
       },
       {
+        field: "实投",
+        headerName: "实投(元)",
+        width: 105,
+        type: "numericColumn",
+        cellRenderer: (p: { data?: TradeRow }) => {
+          const d = p.data;
+          if (!d) return null;
+          // 买不起 1 手不是「亏了」，是这笔交易根本不存在。
+          // 必须显示出来——它占 22.78%，是单笔金额这个隐含筛选器的直接证据。
+          if (d.无法建仓)
+            return (
+              <span
+                className="text-[var(--color-p1)] text-xs"
+                title={`1 手（100 股）需 ${(d.买入价 * 100).toFixed(0)} 元，超过单笔 10000 元，无法建仓`}
+              >
+                买不起 1 手
+              </span>
+            );
+          return (
+            <span className="num" title={`${d.手数} 手 × 100 股 × ${d.买入价.toFixed(2)}`}>
+              {d.实投.toFixed(0)}
+            </span>
+          );
+        },
+      },
+      {
         field: "卖出日",
         width: 115,
         cellClass: "num",
@@ -155,7 +184,14 @@ export default function InstitutionTrades() {
         type: "numericColumn",
         cellRenderer: (p: { data?: TradeRow }) =>
           p.data ? (
-            <span className={`num ${trendClass(p.data.收益率)}`}>
+            <span
+              className={
+                p.data.无法建仓
+                  ? "num text-[var(--color-muted)] line-through opacity-50"
+                  : `num ${trendClass(p.data.收益率)}`
+              }
+              title={p.data.无法建仓 ? "该股票买不起 1 手，此收益率未实际获得" : undefined}
+            >
               {pct(p.data.收益率, 2)}
               {/* 持有期内除权：按显示价格手算的涨幅会与本列对不上，
                   差额是分红送转——那部分钱确实拿到了，只是不在价格里 */}
@@ -175,12 +211,17 @@ export default function InstitutionTrades() {
         headerName: "盈亏(元)",
         width: 110,
         type: "numericColumn",
-        cellRenderer: (p: { value: number }) => (
-          <span className={`num ${trendClass(p.value)}`}>
-            {p.value >= 0 ? "+" : ""}
-            {p.value.toFixed(0)}
-          </span>
-        ),
+        cellRenderer: (p: { data?: TradeRow }) => {
+          const d = p.data;
+          if (!d) return null;
+          if (d.无法建仓) return <span className="text-[var(--color-muted)]">—</span>;
+          return (
+            <span className={`num ${trendClass(d.盈亏)}`}>
+              {d.盈亏 >= 0 ? "+" : ""}
+              {d.盈亏.toFixed(0)}
+            </span>
+          );
+        },
       },
       { field: "标题", flex: 1, minWidth: 220, tooltipField: "标题" },
     ],
@@ -284,6 +325,16 @@ export default function InstitutionTrades() {
             </select>
           </label>
 
+          <label className="flex cursor-pointer items-center gap-2 pb-1.5 text-sm">
+            <input
+              type="checkbox"
+              checked={roundLot}
+              onChange={(e) => set("lot", e.target.checked ? "" : "0")}
+              className="accent-[var(--color-p2)]"
+            />
+            按整手成交
+          </label>
+
           <label className="block">
             <span className="mb-1 block text-[var(--color-muted)] text-xs">筛选</span>
             <select
@@ -294,6 +345,7 @@ export default function InstitutionTrades() {
               <option value="all">全部</option>
               <option value="win">仅盈利</option>
               <option value="loss">仅亏损</option>
+              <option value="blocked">仅无法建仓</option>
             </select>
           </label>
         </div>
@@ -312,6 +364,14 @@ export default function InstitutionTrades() {
                 value={`${s.峰值并发} 只`}
                 hint={`整个区间里同一时间持股数量的最大值，出现在 ${s.峰值日期 ?? "—"}。平均 ${s.平均并发} 只、中位 ${s.中位并发} 只，资金利用率 ${(s.资金利用率 * 100).toFixed(1)}%`}
               />
+              {data?.round_lot && s.无法建仓笔数 > 0 && (
+                <Stat
+                  label="无法建仓"
+                  value={`${s.无法建仓笔数} 笔`}
+                  cls="text-[var(--color-p1)]"
+                  hint={`这些股票 1 手（100 股）就超过单笔 1 万元，根本买不进去——不是亏损，是这笔交易不存在。它们占 ${((s.无法建仓笔数 / (s.笔数 + s.无法建仓笔数)) * 100).toFixed(1)}%，在下方表格中以「买不起 1 手」标出。可用「仅无法建仓」筛选查看`}
+                />
+              )}
               <Stat
                 label="所需资金"
                 value={`${(s.所需资金 / 10000).toFixed(1)} 万`}
@@ -359,6 +419,16 @@ export default function InstitutionTrades() {
                 <b>超过一半的研报是亏的</b>，全部利润来自少数大赢家。
                 这意味着按这家机构的研报逐份买入，最可能的单次结果是亏损——
                 只有在能承受长尾、且每一份都买的前提下，总账才为正。
+              </p>
+            )}
+            {data?.round_lot && s.无法建仓笔数 > 0 && (
+              <p className="mt-3 text-[var(--color-p1)] text-xs leading-relaxed">
+                ⚠️ {s.无法建仓笔数} 笔因 1 手（100 股）超过单笔 1 万元而无法建仓， 占{" "}
+                {((s.无法建仓笔数 / (s.笔数 + s.无法建仓笔数)) * 100).toFixed(1)}%。
+                <b>「1 万元」因此成了一个隐含筛选器</b>——它自动排除了高价股，
+                而实测被排除的这批平均收益 +0.28%、低于可买入部分的 +1.55%。 换成 5
+                万一笔会买进更多高价股，结果未必更好。
+                关掉上方「按整手成交」可看不受此约束的对照。
               </p>
             )}
             {s.涨停顺延笔数 > 0 && (

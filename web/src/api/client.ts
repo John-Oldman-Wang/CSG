@@ -162,6 +162,7 @@ export const api = {
     horizon = 20,
     buy: BuyRule = "bullish",
     exitSignal: ExitSignal = "none",
+    roundLot = true,
     capital = 10000,
     minTrades = 100,
   ) =>
@@ -170,25 +171,19 @@ export const api = {
       capital,
       buy,
       exit_signal: exitSignal,
+      round_lot: roundLot ? "true" : "false",
       min_trades: minTrades,
     }),
 
   institutionOptions: (minReports = 30) =>
     get<InstitutionOption[]>("/institution-options", { min_reports: minReports }),
 
-  institutionTrades: (
-    institution: string,
-    horizon = 20,
-    buy: BuyRule = "bullish",
-    exitSignal: ExitSignal = "none",
-    capital = 10000,
-  ) =>
+  institutionTrades: (institution: string, horizon = 20, roundLot = true, capital = 10000) =>
     get<InstitutionTradesResp>("/institution-trades", {
       institution,
       horizon,
       capital,
-      buy,
-      exit_signal: exitSignal,
+      round_lot: roundLot ? "true" : "false",
     }),
 
   poolTiers: () => get<PoolTiersResp>("/pool-tiers"),

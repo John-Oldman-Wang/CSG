@@ -46,10 +46,11 @@ export function InstitutionCurves({ onPick }: { onPick?: (institution: string) =
   const [mode, setMode] = useState<"rate" | "excess" | "pnl">("rate");
   const [buy, setBuy] = useState<BuyRule>("bullish");
   const [exitSignal, setExitSignal] = useState<ExitSignal>("none");
+  const [roundLot, setRoundLot] = useState(true);
 
   const { data, isLoading } = useQuery({
-    queryKey: ["institutionCurves", horizon, buy, exitSignal],
-    queryFn: () => api.institutionCurves(horizon, buy, exitSignal),
+    queryKey: ["institutionCurves", horizon, buy, exitSignal, roundLot],
+    queryFn: () => api.institutionCurves(horizon, buy, exitSignal, roundLot),
   });
 
   if (isLoading) return <Empty>加载中</Empty>;
@@ -195,7 +196,7 @@ export function InstitutionCurves({ onPick }: { onPick?: (institution: string) =
               ))}
             </div>
             <div className="flex gap-1">
-              {[20, 50, 100].map((h) => (
+              {[5, 10, 20, 50, 100].map((h) => (
                 <button
                   type="button"
                   key={h}
@@ -243,6 +244,19 @@ export function InstitutionCurves({ onPick }: { onPick?: (institution: string) =
               </option>
             ))}
           </select>
+        </label>
+
+        <label className="flex cursor-pointer items-center gap-2 pb-1.5 text-sm">
+          <input
+            type="checkbox"
+            checked={roundLot}
+            onChange={(e) => setRoundLot(e.target.checked)}
+            className="accent-[var(--color-p2)]"
+          />
+          <span>
+            按整手成交
+            <span className="ml-1 text-[var(--color-muted)] text-xs">1 手 = 100 股</span>
+          </span>
         </label>
 
         <div className="text-[var(--color-muted)] text-xs">
