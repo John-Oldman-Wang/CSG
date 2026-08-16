@@ -167,3 +167,48 @@ export function DataLocked({ message }: { message: string }) {
     </Card>
   );
 }
+
+/**
+ * 研报发布后 N 日的**超额**收益。
+ *
+ * 三种状态必须可区分——这是本组件存在的理由：
+ *
+ *   有数值      窗口已走完，超额收益（红涨绿跌）
+ *   「未满 12/20」 窗口未走完，已走 12 个交易日
+ *   「—」        无行情数据，或该月无基准可比
+ *
+ * 若窗口未满时留空，它与「数据缺了」在视觉上完全一样，
+ * 而两者的含义相反：前者是「再等等」，后者是「这条不可信」。
+ */
+export function ReturnCell({
+  value,
+  horizon,
+  elapsed,
+}: {
+  value: number | null;
+  horizon: number;
+  elapsed: number | null;
+}) {
+  if (value != null) {
+    return (
+      <span
+        className="num"
+        style={{ color: value > 0 ? "var(--color-up)" : "var(--color-down)" }}
+      >
+        {value > 0 ? "+" : ""}
+        {(value * 100).toFixed(1)}%
+      </span>
+    );
+  }
+  if (elapsed != null && elapsed < horizon) {
+    return (
+      <span
+        className="num text-[var(--color-muted)] text-xs"
+        title={`发布后仅过去 ${elapsed} 个交易日，未满 ${horizon} 日，窗口尚未走完`}
+      >
+        未满 {elapsed}/{horizon}
+      </span>
+    );
+  }
+  return <span className="text-[var(--color-muted)]">—</span>;
+}

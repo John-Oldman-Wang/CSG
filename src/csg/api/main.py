@@ -78,14 +78,26 @@ def write_db():
 
 
 def _records(df) -> list[dict[str, Any]]:
-    """DataFrame → JSON 安全的记录列表。NaN 转 None，日期转 ISO 字符串。"""
+    """DataFrame → JSON 安全的记录列表。NaN 转 None，日期转 ISO 字符串。
+
+    ⚠️ `df.where(df.notna(), None)` 对 **float64 列不起作用**：
+    pandas 会把 None 强制回 NaN，列仍是 float64。于是 NaN 一路走到
+    `to_dict()`，被序列化成字面量 `NaN`——那不是合法 JSON，
+    `JSON.parse` 直接抛错，而前端只会表现为「这个接口坏了」。
+
+    因此逐值判定，不依赖 DataFrame 层的替换。
+    """
     if df is None or df.empty:
         return []
-    out = df.where(df.notna(), None).to_dict(orient="records")
+    out = df.to_dict(orient="records")
     for row in out:
         for k, v in row.items():
-            if isinstance(v, (dt.date, dt.datetime)):
+            if v is None or (isinstance(v, float) and v != v):  # NaN != NaN
+                row[k] = None
+            elif isinstance(v, (dt.date, dt.datetime)):
                 row[k] = v.isoformat()
+            elif pd.isna(v):                      # NaT、pd.NA
+                row[k] = None
             elif hasattr(v, "item"):
                 row[k] = v.item()
     return out
@@ -583,12 +595,150 @@ def search_reports(
         if has_forecast is not None and not rows.empty:
             rows = rows[rows["has_forecast"] == has_forecast]
 
+        rows = _attach_returns(db, rows)
+
         return {
             "total": int(total),
             "page": page,
             "page_size": page_size,
+            "horizons": RETURN_HORIZONS,
             "items": _records(rows),
         }
+
+
+# ======================================================================
+# 研报发布后的表现
+# ======================================================================
+
+RETURN_HORIZONS = (20, 50, 100)
+
+# 月度基准缓存：键为 (horizon, 行情末日)。
+# 行情末日变化即失效，故不会取到陈旧基准。
+_BENCH_CACHE: dict[tuple[int, str], dict] = {}
+
+
+def _monthly_benchmark(db, horizon: int, end_iso: str) -> dict:
+    """同月全样本研报收益的中位数 —— 超额收益的基准。
+
+    **绝对收益在这里没有意义**：牛市里所有研报都"赢"，那不是研报的功劳。
+    与 /api/institution-winrates 用同一口径，两处数字才对得上——
+    若表格显示绝对收益、徽章显示超额胜率，同一份研报会同时呈现
+    "涨了 30%" 与 "跑输"，读者无从判断哪个是真的。
+    """
+    key = (horizon, end_iso)
+    if key in _BENCH_CACHE:
+        return _BENCH_CACHE[key]
+
+    df = db.query(
+        """
+        WITH px AS (
+            SELECT code, trade_date, close * adj_factor AS p,
+                   row_number() OVER (PARTITION BY code ORDER BY trade_date) AS rn
+            FROM daily_quote
+            WHERE close IS NOT NULL AND adj_factor IS NOT NULL AND close > 0
+        ),
+        maxrn AS (SELECT code, max(rn) AS last_rn FROM px GROUP BY code),
+        ent AS (
+            SELECT r.code, r.publish_date, min(px.rn) AS entry_rn
+            FROM research_report r
+            JOIN px ON px.code = r.code AND px.trade_date > r.publish_date
+            GROUP BY r.code, r.publish_date
+        )
+        SELECT date_trunc('month', e.publish_date) AS m,
+               median((h.p / en.p) - 1) AS med
+        FROM ent e
+        JOIN maxrn mx ON mx.code = e.code
+        JOIN px en ON en.code = e.code AND en.rn = e.entry_rn
+        JOIN px h  ON h.code  = e.code AND h.rn  = e.entry_rn + ?
+        WHERE e.entry_rn + ? <= mx.last_rn
+        GROUP BY 1
+        """, [horizon, horizon])
+
+    bench = {str(pd.Timestamp(r["m"]).date())[:7]: float(r["med"])
+             for _, r in df.iterrows()}
+    _BENCH_CACHE[key] = bench
+    return bench
+
+
+def _attach_returns(db, rows: pd.DataFrame) -> pd.DataFrame:
+    """为当前页的研报补上 20/50/100 日超额收益。
+
+    只对本页的 N 行计算，不做全表扫描——研报库近两万条，
+    每次翻页全算会让接口无法使用（CLAUDE.md 第 5 条：聚合下推 SQL，
+    pandas 只处理结果集）。
+
+    **窗口未走完的研报返回 None，不返回 0，也不用当前价凑数。**
+    发布日 + horizon 个交易日若超出数据末日，该研报尚无结果；
+    填任何数字都会让"最近发布的研报"整体呈现出行情最近的涨跌，
+    那是纯粹的时点偏差。
+    """
+    for h in RETURN_HORIZONS:
+        rows[f"ret_{h}"] = None
+    rows["elapsed_days"] = None
+    if rows.empty:
+        return rows
+
+    end_iso = str(pd.Timestamp(
+        db.query("SELECT max(trade_date) AS d FROM daily_quote")["d"].iloc[0]).date())
+
+    pairs = rows[["code", "publish_date"]].drop_duplicates()
+    db.conn.register("_page_keys", pairs)
+    try:
+        marks = ",".join("?" * len(RETURN_HORIZONS))
+        got = db.query(
+            f"""
+            WITH px AS (
+                SELECT code, trade_date, close * adj_factor AS p,
+                       row_number() OVER (PARTITION BY code ORDER BY trade_date) AS rn
+                FROM daily_quote
+                WHERE code IN (SELECT code FROM _page_keys)
+                  AND close IS NOT NULL AND adj_factor IS NOT NULL AND close > 0
+            ),
+            maxrn AS (SELECT code, max(rn) AS last_rn FROM px GROUP BY code),
+            ent AS (
+                SELECT k.code, k.publish_date, min(px.rn) AS entry_rn
+                FROM _page_keys k
+                JOIN px ON px.code = k.code AND px.trade_date > k.publish_date
+                GROUP BY k.code, k.publish_date
+            ),
+            hz(h) AS (SELECT unnest([{marks}]))
+            SELECT e.code, e.publish_date, hz.h,
+                   (h.p / en.p) - 1 AS ret,
+                   -- 自入场日起已走完的交易日数。窗口未满时前端据此
+                   -- 显示「12/20 日」而非留空——空白无法区分
+                   -- 「还没到时候」与「数据缺了」。
+                   mx.last_rn - e.entry_rn AS elapsed
+            FROM ent e
+            CROSS JOIN hz
+            JOIN maxrn mx ON mx.code = e.code
+            JOIN px en ON en.code = e.code AND en.rn = e.entry_rn
+            LEFT JOIN px h ON h.code = e.code AND h.rn = e.entry_rn + hz.h
+            """, list(RETURN_HORIZONS))
+    finally:
+        db.conn.unregister("_page_keys")
+
+    if got.empty:
+        return rows
+
+    benches = {h: _monthly_benchmark(db, h, end_iso) for h in RETURN_HORIZONS}
+    idx: dict = {}
+    elapsed: dict = {}
+    for _, r in got.iterrows():
+        key2 = (r["code"], pd.Timestamp(r["publish_date"]).date())
+        elapsed[key2] = int(r["elapsed"])
+        if pd.isna(r["ret"]):
+            continue                      # 窗口未走完，由 elapsed 表达
+        med = benches[int(r["h"])].get(str(key2[1])[:7])
+        if med is None:
+            continue                      # 该月无基准，超额无从计算
+        idx[(*key2, int(r["h"]))] = float(r["ret"]) - med
+
+    keys = [(c, pd.Timestamp(d).date())
+            for c, d in zip(rows["code"], rows["publish_date"], strict=True)]
+    for h in RETURN_HORIZONS:
+        rows[f"ret_{h}"] = [idx.get((*k, h)) for k in keys]
+    rows["elapsed_days"] = [elapsed.get(k) for k in keys]
+    return rows
 
 
 @app.get("/api/reports/{report_id}")

@@ -16,6 +16,7 @@ import {
   Card,
   CardTitle,
   DataLocked,
+  ReturnCell,
   WinRateBadge,
 } from "@/components/ui/primitives";
 import { useTheme } from "@/lib/theme";
@@ -198,6 +199,22 @@ export default function Reports() {
           );
         },
       },
+      ...([20, 50, 100] as const).map(
+        (h): ColDef<ReportRow> => ({
+          field: `ret_${h}` as keyof ReportRow,
+          headerName: `${h}日超额`,
+          width: 108,
+          type: "numericColumn",
+          cellRenderer: (p: { data?: ReportRow }) =>
+            p.data ? (
+              <ReturnCell
+                value={p.data[`ret_${h}`]}
+                horizon={h}
+                elapsed={p.data.elapsed_days}
+              />
+            ) : null,
+        }),
+      ),
       {
         field: "has_forecast",
         headerName: "预测",

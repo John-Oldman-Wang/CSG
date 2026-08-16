@@ -156,12 +156,21 @@ export interface ReportRow {
   rating_change: RatingChange;
   has_forecast: boolean;
   pdf_url: string | null;
+  /** 发布后 N 日**超额**收益（个股收益 − 同月全样本中位数）。
+   *  窗口未走完时为 null —— 不是 0，也不用当前价凑数。 */
+  ret_20: number | null;
+  ret_50: number | null;
+  ret_100: number | null;
+  /** 自入场日起已走完的交易日数。用于把「窗口未满」与「数据缺失」区分开。
+   *  null 表示发布后还没有交易日，尚未入场。 */
+  elapsed_days: number | null;
 }
 
 export interface ReportSearchResult {
   total: number;
   page: number;
   page_size: number;
+  horizons: number[];
   items: ReportRow[];
 }
 
