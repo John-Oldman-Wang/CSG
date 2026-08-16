@@ -187,3 +187,62 @@ def fetch_valuation(code: str, start: dt.date, end: dt.date) -> pd.DataFrame:
     out["total_mv"] = pd.NA
     out["circ_mv"] = pd.NA
     return out[out["pe_ttm"].notna() | out["pb"].notna()].reset_index(drop=True)
+
+
+# ----------------------------------------------------------------------
+# 指数行情
+# ----------------------------------------------------------------------
+
+# 用于对照的指数。
+#
+# **必须有指数对照，否则策略收益无法解读**：跟着研报买九年半年化 2.88%，
+# 若同期沪深300 年化 5%，那这套做法是在毁灭价值而非创造价值。
+#
+# 选四个而非一个：本项目股票池集中在新能源/AI，创业板与科创板权重极高，
+# 只对沪深300 会低估股票池自身的 beta；只对创业板指又会忽略大盘环境。
+INDEXES = {
+    "000300": ("sh.000300", "沪深300"),
+    "000905": ("sh.000905", "中证500"),
+    "399006": ("sz.399006", "创业板指"),
+    "000001": ("sh.000001", "上证指数"),
+}
+
+
+def fetch_index_quote(code: str, start: dt.date, end: dt.date) -> pd.DataFrame:
+    """指数日线。
+
+    指数无复权概念（本身即点位序列），故只取不复权，adjustflag=3。
+    列结构与 daily_quote 对齐，便于同样的收益率计算复用。
+    """
+    import baostock as bs
+
+    if code not in INDEXES:
+        raise ValueError(f"未知指数 {code}，可选：{list(INDEXES)}")
+    bs_code, name = INDEXES[code]
+
+    _ensure_login()
+    try:
+        raw = _fetch(bs.query_history_k_data_plus(
+            bs_code, "date,open,high,low,close,volume,amount,pctChg",
+            start_date=start.isoformat(), end_date=end.isoformat(),
+            frequency="d"))
+    except RuntimeError as exc:
+        log.warning("指数 %s 查询失败(%s)，重新登录后重试", code, exc)
+        _relogin()
+        raw = _fetch(bs.query_history_k_data_plus(
+            bs_code, "date,open,high,low,close,volume,amount,pctChg",
+            start_date=start.isoformat(), end_date=end.isoformat(),
+            frequency="d"))
+
+    if raw.empty:
+        return pd.DataFrame()
+
+    out = pd.DataFrame()
+    out["code"] = [code] * len(raw)
+    out["name"] = [name] * len(raw)
+    out["trade_date"] = pd.to_datetime(raw["date"]).dt.date
+    for src, dst in [("open", "open"), ("high", "high"), ("low", "low"),
+                     ("close", "close"), ("volume", "volume"),
+                     ("amount", "amount"), ("pctChg", "pct_chg")]:
+        out[dst] = pd.to_numeric(raw[src], errors="coerce").astype("float64")
+    return out[out["close"].notna() & (out["close"] > 0)].reset_index(drop=True)

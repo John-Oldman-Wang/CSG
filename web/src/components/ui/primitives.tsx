@@ -49,13 +49,17 @@ export function Badge({
   children,
   tone = "default",
   className,
+  title,
 }: {
   children: ReactNode;
   tone?: "default" | "P0" | "P1" | "P2" | "warn";
   className?: string;
+  /** 悬停说明。徽章空间小，解释放这里而非挤进标签 */
+  title?: string;
 }) {
   return (
     <span
+      title={title}
       className={cn(
         "inline-flex items-center rounded border px-1.5 py-0.5 font-medium text-xs",
         tone === "default" && "border-[var(--color-border)] text-[var(--color-muted)]",

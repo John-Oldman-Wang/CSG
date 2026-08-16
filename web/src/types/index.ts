@@ -457,8 +457,18 @@ export interface InstitutionOption {
 export interface CurvePoint {
   月: string;
   累计盈亏: number;
+  /** 累计**同窗口超额**盈亏：个股收益 − 同期指数收益，剥离市场涨跌 */
+  累计超额: number;
   累计收益率: number;
   累计笔数: number;
+}
+
+export interface IndexLine {
+  code: string;
+  name: string;
+  曲线: { 月: string; 涨跌幅: number }[];
+  区间涨跌: number;
+  年化: number | null;
 }
 
 export interface CurveInstitution {
@@ -474,20 +484,34 @@ export interface CurveInstitution {
   年数: number;
   累计收益率: number;
   年化收益率: number | null;
+  累计超额率: number;
+  年化超额: number | null;
+  同期指数收益: number;
   胜率: number;
   平均收益率: number;
   中位收益率: number;
   盈亏比: number | null;
   涨停顺延笔数: number;
+  提前离场笔数: number;
+  平均持有日: number;
   最大回撤: number;
   曲线: CurvePoint[];
 }
+
+export type BuyRule = "strict" | "bullish";
+export type ExitSignal = "none" | "bearish" | "downgrade" | "any_downgrade";
 
 export interface InstitutionCurvesResp {
   horizon: number;
   capital: number;
   min_trades: number;
+  bench_index: string;
+  indexes: IndexLine[];
+  buy: BuyRule;
+  exit_signal: ExitSignal;
   entry_rule: string;
+  exit_rule: string;
+  提前离场笔数: number;
   benchmark: CurveInstitution;
   beat_benchmark: number;
   institutions: CurveInstitution[];

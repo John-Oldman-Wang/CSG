@@ -257,3 +257,22 @@ CREATE INDEX IF NOT EXISTS idx_cashflow_disc ON fin_cashflow(disclosure_date);
 CREATE INDEX IF NOT EXISTS idx_industry_name ON industry_member(taxonomy, industry_name);
 CREATE INDEX IF NOT EXISTS idx_report_date   ON research_report(publish_date);
 CREATE INDEX IF NOT EXISTS idx_report_code   ON research_report(code, publish_date);
+
+
+-- 指数行情。
+--
+-- 独立于 daily_quote：指数无复权概念（本身即点位序列），
+-- 混入个股表会让「所有查询都要记得排除指数」，迟早漏掉一处。
+CREATE TABLE IF NOT EXISTS index_quote (
+    code        VARCHAR NOT NULL,
+    name        VARCHAR,
+    trade_date  DATE    NOT NULL,
+    open        DOUBLE,
+    high        DOUBLE,
+    low         DOUBLE,
+    close       DOUBLE,
+    volume      DOUBLE,
+    amount      DOUBLE,
+    pct_chg     DOUBLE,
+    PRIMARY KEY (code, trade_date)
+);

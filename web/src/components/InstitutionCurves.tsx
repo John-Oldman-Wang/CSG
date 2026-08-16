@@ -5,7 +5,7 @@ import { api } from "@/api/client";
 import { Badge, Card, CardTitle, Empty } from "@/components/ui/primitives";
 import { useTheme } from "@/lib/theme";
 import { pct } from "@/lib/utils";
-import type { CurveInstitution } from "@/types";
+import type { BuyRule, CurveInstitution, ExitSignal } from "@/types";
 
 /**
  * 「跟着某机构的每一份研报买」的资金曲线，按机构叠加。
@@ -21,14 +21,35 @@ import type { CurveInstitution } from "@/types";
  * 默认显示**累计收益率**而非累计盈亏：发研报多的机构投入也多，
  * 终点金额自然更高，按金额排名等于按研报数量排名。
  */
+const EXIT_OPTIONS: { v: ExitSignal; label: string; hint: string }[] = [
+  { v: "none", label: "固定持有", hint: "满 N 个交易日卖出，不看后续研报" },
+  {
+    v: "downgrade",
+    label: "同机构下调",
+    hint: "跟谁买就听谁的：该机构下调评级后次日离场。实测九年半仅触发 9 次",
+  },
+  {
+    v: "any_downgrade",
+    label: "任意机构下调",
+    hint: "任何一家下调即离场。触发 374 次（2.1%），但收益反而略降",
+  },
+  {
+    v: "bearish",
+    label: "出现非看多评级",
+    hint: "持有/中性/减持/卖出 任一出现即离场。A 股这四类合计仅占 0.66%",
+  },
+];
+
 export function InstitutionCurves({ onPick }: { onPick?: (institution: string) => void }) {
   const { theme } = useTheme();
   const [horizon, setHorizon] = useState(20);
-  const [mode, setMode] = useState<"rate" | "pnl">("rate");
+  const [mode, setMode] = useState<"rate" | "excess" | "pnl">("rate");
+  const [buy, setBuy] = useState<BuyRule>("bullish");
+  const [exitSignal, setExitSignal] = useState<ExitSignal>("none");
 
   const { data, isLoading } = useQuery({
-    queryKey: ["institutionCurves", horizon],
-    queryFn: () => api.institutionCurves(horizon),
+    queryKey: ["institutionCurves", horizon, buy, exitSignal],
+    queryFn: () => api.institutionCurves(horizon, buy, exitSignal),
   });
 
   if (isLoading) return <Empty>加载中</Empty>;
@@ -42,13 +63,18 @@ export function InstitutionCurves({ onPick }: { onPick?: (institution: string) =
   ).sort();
 
   const line = (inst: CurveInstitution, isBench: boolean) => {
-    const byMonth = new Map(
-      inst.曲线.map((c) => [c.月, mode === "rate" ? c.累计收益率 : c.累计盈亏]),
-    );
+    // 超额视图用「累计超额 ÷ 占用资金」，与绝对收益率同分母，两条线可叠加比较
+    const pick = (c: (typeof inst.曲线)[number]) =>
+      mode === "rate"
+        ? c.累计收益率 * 100
+        : mode === "excess"
+          ? (c.累计超额 / inst.占用资金) * 100
+          : c.累计盈亏;
+    const byMonth = new Map(inst.曲线.map((c) => [c.月, pick(c)]));
     let last: number | null = null;
     const series = months.map((m) => {
       const v = byMonth.get(m);
-      if (v != null) last = mode === "rate" ? v * 100 : v;
+      if (v != null) last = v;
       return last;
     });
     return {
@@ -104,7 +130,32 @@ export function InstitutionCurves({ onPick }: { onPick?: (institution: string) =
       axisLabel: { color: muted, fontSize: 10 },
       splitLine: { lineStyle: { color: grid, type: "dashed" } },
     },
-    series: [...data.institutions.map((i) => line(i, false)), line(data.benchmark, true)],
+    series: [
+      ...data.institutions.map((i) => line(i, false)),
+      line(data.benchmark, true),
+      // 指数线只在收益率视图下叠加：
+      // 超额视图已把指数剥离，再画指数线是重复计量；
+      // 盈亏额视图单位是元，与指数百分比无法共轴。
+      ...(mode === "rate"
+        ? data.indexes.map((ix) => {
+            const byMonth = new Map(ix.曲线.map((c) => [c.月, c.涨跌幅 * 100]));
+            let last: number | null = null;
+            return {
+              name: ix.name,
+              type: "line",
+              data: months.map((m) => {
+                const v = byMonth.get(m);
+                if (v != null) last = v;
+                return last;
+              }),
+              showSymbol: false,
+              z: 8,
+              lineStyle: { width: 1.8, type: "dashed", opacity: 0.9 },
+              endLabel: { show: true, formatter: ix.name, fontSize: 10 },
+            };
+          })
+        : []),
+    ],
   };
 
   const beatRatio = data.beat_benchmark / data.institutions.length;
@@ -115,7 +166,7 @@ export function InstitutionCurves({ onPick }: { onPick?: (institution: string) =
         extra={
           <div className="flex items-center gap-3">
             <div className="flex gap-1">
-              {(["rate", "pnl"] as const).map((m) => (
+              {(["rate", "excess", "pnl"] as const).map((m) => (
                 <button
                   type="button"
                   key={m}
@@ -126,7 +177,7 @@ export function InstitutionCurves({ onPick }: { onPick?: (institution: string) =
                       : "border-[var(--color-border)] text-[var(--color-muted)]"
                   }`}
                 >
-                  {m === "rate" ? "收益率" : "盈亏额"}
+                  {m === "rate" ? "收益率" : m === "excess" ? "超额" : "盈亏额"}
                 </button>
               ))}
             </div>
@@ -152,8 +203,58 @@ export function InstitutionCurves({ onPick }: { onPick?: (institution: string) =
         跟着每家机构买的累计曲线
       </CardTitle>
 
+      <div className="mb-3 flex flex-wrap items-end gap-4 border-[var(--color-border)] border-b pb-3">
+        <label className="block">
+          <span className="mb-1 block text-[var(--color-muted)] text-xs">买入信号</span>
+          <select
+            value={buy}
+            onChange={(e) => setBuy(e.target.value as BuyRule)}
+            className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 text-sm"
+          >
+            <option value="bullish">看多评级（买入 + 增持，99.33%）</option>
+            <option value="strict">仅「买入」评级（77.18%）</option>
+          </select>
+        </label>
+
+        <label className="block">
+          <span className="mb-1 block text-[var(--color-muted)] text-xs">提前离场信号</span>
+          <select
+            value={exitSignal}
+            onChange={(e) => setExitSignal(e.target.value as ExitSignal)}
+            title={EXIT_OPTIONS.find((o) => o.v === exitSignal)?.hint}
+            className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 text-sm"
+          >
+            {EXIT_OPTIONS.map((o) => (
+              <option key={o.v} value={o.v} title={o.hint}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <div className="text-[var(--color-muted)] text-xs">
+          触发提前离场 <b className="num text-[var(--color-fg)]">{data.提前离场笔数}</b> 笔 / 共{" "}
+          <b className="num text-[var(--color-fg)]">{data.benchmark.笔数}</b> 笔（
+          {((data.提前离场笔数 / data.benchmark.笔数) * 100).toFixed(2)}%）
+          <br />
+          平均实际持有 <b className="num text-[var(--color-fg)]">{data.benchmark.平均持有日}</b>{" "}
+          个交易日
+        </div>
+      </div>
+
+      {exitSignal !== "none" && data.提前离场笔数 / data.benchmark.笔数 < 0.03 && (
+        <p className="mb-2 text-[var(--color-p1)] text-xs leading-relaxed">
+          ⚠️ 这条卖出规则在 A 股几乎不触发。实测评级分布： 买入 77.18%、增持 22.15%、持有
+          0.40%、中性 0.23%、
+          <b>卖出 0.03%（九年半共 6 份）、减持 0 份</b>。
+          券商不愿得罪覆盖对象，负面观点用「下调」而非「卖出」表达； 而同一机构在 20
+          个交易日内下调，九年半仅 9 次。 规则本身没错，是这个市场没有给它可用的信号。
+        </p>
+      )}
+
       <p className="mb-2 text-[var(--color-muted)] text-xs leading-relaxed">
-        {data.entry_rule}；持有 {horizon} 个交易日按收盘价卖出，每份投入 1 万元。
+        {data.entry_rule}。<br />
+        离场：{data.exit_rule}，每份投入 1 万元。
         <br />
         <b>收益率的分母是「峰值同时持仓 × 1 万」</b>，不是「1 万 × 笔数」——
         持有期满卖出后资金回笼，下一份研报用的是同一笔钱。 按笔数累加会把基准的本金算成 18,105
@@ -173,6 +274,23 @@ export function InstitutionCurves({ onPick }: { onPick?: (institution: string) =
         )}
       </p>
 
+      {mode === "rate" && (
+        <p className="mb-2 text-[var(--color-p1)] text-xs leading-relaxed">
+          虚线为指数<b>满仓买入持有</b>，与策略曲线<b>不是同一口径，不可直接比高低</b>：
+          指数是一直满仓，策略只在有研报时建仓，平均并发仅为峰值的{" "}
+          {((data.benchmark.平均并发 / data.benchmark.峰值并发) * 100).toFixed(0)}%，
+          八成时间钱是闲着的。策略跑输指数不等于选股差，可能只是仓位低—— 要看选股能力，请切到
+          <b>「超额」</b>视图（同窗口个股收益 − 指数收益）。
+        </p>
+      )}
+      {mode === "excess" && (
+        <p className="mb-2 text-[var(--color-muted)] text-xs leading-relaxed">
+          <b>同窗口超额</b>：每笔交易的收益 − 同一区间指数（{data.bench_index}）的收益，
+          再除以占用资金。它把市场涨跌整个剥离，剩下的才是选股贡献——
+          这是唯一能回答「研报有没有价值」的口径。
+        </p>
+      )}
+
       <ReactECharts option={option} style={{ height: 420 }} notMerge />
 
       <div className="mt-3 flex flex-wrap items-center gap-2 border-[var(--color-border)] border-t pt-3">
@@ -190,6 +308,17 @@ export function InstitutionCurves({ onPick }: { onPick?: (institution: string) =
         <Badge tone={beatRatio > 0.65 ? "P2" : "warn"}>
           年化跑赢基准 {data.beat_benchmark}/{data.institutions.length}
         </Badge>
+        <Badge
+          tone={(data.benchmark.年化超额 ?? 0) > 0 ? "P2" : "warn"}
+          title="剥离市场涨跌后的选股贡献"
+        >
+          基准年化超额 {data.benchmark.年化超额 != null ? pct(data.benchmark.年化超额, 2) : "—"}
+        </Badge>
+        {data.indexes.map((ix) => (
+          <Badge key={ix.code} title={`区间 ${pct(ix.区间涨跌, 1)}`}>
+            {ix.name} 年化 {ix.年化 != null ? pct(ix.年化, 2) : "—"}
+          </Badge>
+        ))}
       </div>
 
       <p className="mt-2 text-[var(--color-p1)] text-xs leading-relaxed">

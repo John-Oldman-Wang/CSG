@@ -1540,7 +1540,7 @@ cand AS (
            ) AS seq
     FROM research_report r
     JOIN buyable b ON b.code = r.code AND b.trade_date > r.publish_date
-    WHERE r.rating IS NOT NULL AND r.rating <> ''
+    WHERE r.rating IN ({buy_ratings})
 ),
 picked AS (
     SELECT *,
@@ -1560,11 +1560,108 @@ entry AS (
 """
 
 
+# 卖出信号 CTE —— 与 ENTRY_CTE 拼接使用。
+#
+# **A 股的现实：卖出评级几乎不存在。** 实测 18147 份研报中：
+#     买入 77.18%  增持 22.15%  持有 0.40%  中性 0.23%  卖出 0.03%（6 份）
+#     减持 0 份
+# 券商不愿得罪覆盖对象，负面观点用「下调」而非「卖出」表达。
+# 因此按字面的「卖出评级」离场，九年半只会触发 6 次——规则形同虚设。
+#
+# 真正有信号密度的是**评级下调**（278 份，1.53%）：
+# 同一家机构把「买入」降为「增持」，那是实际存在的负面表态。
+#
+# ⚠️ 但下调的预测力已被验证④ 证伪：发现期下调后 60 日超额 +1.62%，
+#    验证期 −3.00%，符号完全反转。两期反向是噪音的典型特征。
+#    提供这个选项是为了让你**亲眼看到它不起作用**，不是推荐使用。
+EXIT_SIGNAL_SQL = {
+    # 不提前离场，固定持有 horizon 个交易日
+    "none": None,
+    # 任意机构给出非看多评级（持有/中性/减持/卖出）
+    "bearish": """
+        SELECT code, publish_date AS sig_date
+        FROM research_report
+        WHERE rating IN ('持有', '中性', '减持', '卖出')
+    """,
+    # **同一家机构**下调评级——跟谁买就听谁的
+    "downgrade": """
+        WITH sc AS (
+            SELECT code, institution, publish_date,
+                   CASE rating WHEN '买入' THEN 5 WHEN '增持' THEN 4
+                        WHEN '持有' THEN 3 WHEN '中性' THEN 3
+                        WHEN '减持' THEN 2 WHEN '卖出' THEN 1 END AS s
+            FROM research_report WHERE rating IS NOT NULL AND rating <> ''
+        ),
+        d AS (
+            SELECT *, lag(s) OVER (PARTITION BY code, institution
+                                   ORDER BY publish_date) AS prev
+            FROM sc
+        )
+        SELECT code, institution, publish_date AS sig_date
+        FROM d WHERE prev IS NOT NULL AND s < prev
+    """,
+    # 任意机构下调
+    "any_downgrade": """
+        WITH sc AS (
+            SELECT code, institution, publish_date,
+                   CASE rating WHEN '买入' THEN 5 WHEN '增持' THEN 4
+                        WHEN '持有' THEN 3 WHEN '中性' THEN 3
+                        WHEN '减持' THEN 2 WHEN '卖出' THEN 1 END AS s
+            FROM research_report WHERE rating IS NOT NULL AND rating <> ''
+        ),
+        d AS (
+            SELECT *, lag(s) OVER (PARTITION BY code, institution
+                                   ORDER BY publish_date) AS prev
+            FROM sc
+        )
+        SELECT DISTINCT code, publish_date AS sig_date
+        FROM d WHERE prev IS NOT NULL AND s < prev
+    """,
+}
+
+BUY_RATING_SETS = {
+    # 只买「买入」评级（77.18%）
+    "strict": "'买入'",
+    # 买入 + 增持，即全部看多评级（99.33%）
+    "bullish": "'买入', '增持'",
+}
+
+
+def _exit_join(signal: str) -> tuple[str, str]:
+    """返回 (信号 CTE 片段, 离场 rn 表达式)。
+
+    信号发布当日**不卖**——与买入侧对称：当日收盘价已含该消息。
+    取信号发布后的第一个交易日收盘卖出。
+    """
+    sql = EXIT_SIGNAL_SQL[signal]
+    if sql is None:
+        return "", "e.ern + {h}"
+
+    same_inst = "AND sig.institution = e.institution" if signal == "downgrade" else ""
+    frag = f"""
+    , sig_raw AS ({sql})
+    , sig_rn AS (
+        SELECT e2.code, e2.publish_date, e2.institution, e2.title,
+               min(qq.rn) AS exit_rn
+        FROM entry e2
+        JOIN sig_raw sig ON sig.code = e2.code
+                        AND sig.sig_date > e2.buy_date {same_inst.replace("e.", "e2.")}
+        JOIN q qq ON qq.code = e2.code AND qq.trade_date > sig.sig_date
+        GROUP BY 1, 2, 3, 4
+    )
+    """
+    return frag, ("least(e.ern + {h}, coalesce(sr.exit_rn, e.ern + {h}))")
+
+
 @app.get("/api/institution-curves")
 def institution_curves(
     horizon: int = 20,
     capital: float = 10000,
     min_trades: int = 100,
+    bench_index: str = "000300",
+    buy: Annotated[str, Query(pattern="^(strict|bullish)$")] = "bullish",
+    exit_signal: Annotated[
+        str, Query(pattern="^(none|bearish|downgrade|any_downgrade)$")] = "none",
 ) -> dict:
     """按机构聚合的资金曲线 —— 「跟着这家机构的每一份研报买」的结果。
 
@@ -1575,35 +1672,59 @@ def institution_curves(
     终点自然更高；同时给出「累计收益率 = 累计盈亏 ÷ 累计投入」，
     那个才可跨机构比较。
     """
+    frag, exit_rn = _exit_join(exit_signal)
+    join_sig = ("LEFT JOIN sig_rn sr ON sr.code = e.code "
+                "AND sr.publish_date = e.publish_date "
+                "AND sr.institution = e.institution AND sr.title = e.title"
+                if frag else "")
     with read_db() as db:
         trades = db.query(
-            ENTRY_CTE + """
+            ENTRY_CTE.format(buy_ratings=BUY_RATING_SETS[buy]) + frag + f"""
             SELECT e.institution AS 机构,
                    e.publish_date,
                    e.buy_date  AS 买入日,
                    x.trade_date AS 卖出日,
                    (x.close * x.adj_factor / e.buy_adj) - 1 AS ret,
-                   e.deferred
+                   e.deferred,
+                   x.rn - e.ern AS 持有交易日,
+                   x.rn - e.ern < {horizon} AS 提前离场,
+                   -- 同窗口指数收益：把「市场怎么走」从「研报选得准不准」里剥掉。
+                   -- 缺了它，牛市里任何策略都赚钱，看不出研报有没有贡献。
+                   (ix.close / ib.close) - 1 AS idx_ret
             FROM entry e
             JOIN mx ON mx.code = e.code
-            JOIN q x ON x.code = e.code AND x.rn = e.ern + ?
-            WHERE e.ern + ? <= mx.last_rn
-            """, [horizon, horizon])
+            {join_sig}
+            JOIN q x ON x.code = e.code
+                    AND x.rn = {exit_rn.format(h=horizon)}
+            LEFT JOIN index_quote ib
+                   ON ib.code = '{bench_index}' AND ib.trade_date = e.buy_date
+            LEFT JOIN index_quote ix
+                   ON ix.code = '{bench_index}' AND ix.trade_date = x.trade_date
+            WHERE e.ern + 1 <= mx.last_rn
+            """)
 
     if trades.empty:
         return {"horizon": horizon, "capital": capital, "institutions": []}
 
     trades["月"] = pd.to_datetime(trades["publish_date"]).dt.to_period("M").astype(str)
     trades["盈亏"] = trades["ret"] * capital
+    # 同窗口超额 = 个股收益 − 同期指数收益。
+    # 这是唯一能回答「研报有没有价值」的口径：它把市场涨跌整个剥离，
+    # 剩下的才是选股贡献。指数数据缺失的交易按 0 处理（不虚构超额）。
+    trades["idx_ret"] = trades["idx_ret"].fillna(0.0)
+    trades["超额"] = trades["ret"] - trades["idx_ret"]
+    trades["超额盈亏"] = trades["超额"] * capital
 
     out = []
     for inst, g in trades.groupby("机构"):
         if len(g) < min_trades:
             continue
         m = (g.groupby("月")
-               .agg(笔数=("ret", "size"), 盈亏=("盈亏", "sum"))
+               .agg(笔数=("ret", "size"), 盈亏=("盈亏", "sum"),
+                    超额盈亏=("超额盈亏", "sum"))
                .reset_index().sort_values("月"))
         m["累计盈亏"] = m["盈亏"].cumsum().round(0)
+        m["累计超额"] = m["超额盈亏"].cumsum().round(0)
         m["累计笔数"] = m["笔数"].cumsum()
         m["累计投入"] = m["累计笔数"] * capital
         m["累计收益率"] = m["累计盈亏"] / m["累计投入"]
@@ -1624,6 +1745,10 @@ def institution_curves(
             # 收益率以**峰值占用资金**为分母：那才是你真正要准备的钱
             "累计收益率": float(g["盈亏"].sum() / use["占用资金"]),
             "年数": use["年数"],
+            "累计超额率": float(g["超额盈亏"].sum() / use["占用资金"]),
+            "年化超额": _annualized(
+                float(g["超额盈亏"].sum() / use["占用资金"]), use["年数"]),
+            "同期指数收益": float(g["idx_ret"].mean()),
             "年化收益率": _annualized(float(g["盈亏"].sum() / use["占用资金"]), use["年数"]),
             "胜率": wins / len(g),
             "平均收益率": float(ret.mean()),
@@ -1631,8 +1756,10 @@ def institution_curves(
             "盈亏比": (float(ret[ret > 0].mean() / abs(ret[ret < 0].mean()))
                        if (ret < 0).any() and (ret > 0).any() else None),
             "涨停顺延笔数": int((g["deferred"] > 0).sum()),
+            "提前离场笔数": int(g["提前离场"].sum()),
+            "平均持有日": round(float(g["持有交易日"].mean()), 1),
             "最大回撤": _max_drawdown(m["累计盈亏"].to_numpy(), use["占用资金"]),
-            "曲线": _records(m[["月", "累计盈亏", "累计收益率", "累计笔数"]]),
+            "曲线": _records(m[["月", "累计盈亏", "累计超额", "累计收益率", "累计笔数"]]),
         })
 
     out.sort(key=lambda x: x["年化收益率"] or -1.0, reverse=True)
@@ -1644,9 +1771,11 @@ def institution_curves(
     # 「挑这家」比「谁的都买」好多少——若各家曲线都贴着基准，
     # 那么挑机构这个动作本身没有创造任何东西。
     bm = (trades.groupby("月")
-                .agg(笔数=("ret", "size"), 盈亏=("盈亏", "sum"))
+                .agg(笔数=("ret", "size"), 盈亏=("盈亏", "sum"),
+                     超额盈亏=("超额盈亏", "sum"))
                 .reset_index().sort_values("月"))
     bm["累计盈亏"] = bm["盈亏"].cumsum().round(0)
+    bm["累计超额"] = bm["超额盈亏"].cumsum().round(0)
     bm["累计笔数"] = bm["笔数"].cumsum()
     buse = _capital_usage(trades["买入日"], trades["卖出日"], capital)
     bm["累计收益率"] = bm["累计盈亏"] / buse["占用资金"]
@@ -1660,6 +1789,10 @@ def institution_curves(
         "平均并发": buse["平均并发"],
         "周转次数": buse["周转次数"],
         "累计收益率": float(trades["盈亏"].sum() / buse["占用资金"]),
+        "累计超额率": float(trades["超额盈亏"].sum() / buse["占用资金"]),
+        "年化超额": _annualized(
+            float(trades["超额盈亏"].sum() / buse["占用资金"]), buse["年数"]),
+        "同期指数收益": float(trades["idx_ret"].mean()),
         "年数": buse["年数"],
         "年化收益率": _annualized(float(trades["盈亏"].sum() / buse["占用资金"]), buse["年数"]),
         "胜率": float((bret > 0).mean()),
@@ -1668,8 +1801,10 @@ def institution_curves(
         "盈亏比": (float(bret[bret > 0].mean() / abs(bret[bret < 0].mean()))
                    if (bret < 0).any() and (bret > 0).any() else None),
         "涨停顺延笔数": int((trades["deferred"] > 0).sum()),
+        "提前离场笔数": int(trades["提前离场"].sum()),
+        "平均持有日": round(float(trades["持有交易日"].mean()), 1),
         "最大回撤": _max_drawdown(bm["累计盈亏"].to_numpy(), buse["占用资金"]),
-        "曲线": _records(bm[["月", "累计盈亏", "累计收益率", "累计笔数"]]),
+        "曲线": _records(bm[["月", "累计盈亏", "累计超额", "累计收益率", "累计笔数"]]),
     }
 
     # 超过基准的家数：这个数字若接近半数，说明机构间差异与随机无异。
@@ -1680,11 +1815,53 @@ def institution_curves(
     bm_ann = benchmark["年化收益率"] or -1.0
     beat = sum(1 for x in out if (x["年化收益率"] or -1.0) > bm_ann)
 
+    # 指数自身的买入持有曲线（月末点位，归一到区间首月）。
+    #
+    # ⚠️ **与策略曲线不是同一口径，不可直接比高低。**
+    # 指数线是满仓持有；策略只在有研报时建仓，平均并发仅为峰值的两成，
+    # 大部分时间钱是闲着的。策略跑输指数线不等于选股差，
+    # 可能只是仓位低——要判断选股能力，看「同窗口超额」那条线。
+    months = sorted(trades["月"].unique())
+    with read_db() as db2:
+        idx = db2.query(
+            """
+            SELECT code, name,
+                   strftime(trade_date, '%Y-%m') AS 月,
+                   last(close ORDER BY trade_date) AS px
+            FROM index_quote GROUP BY 1, 2, 3 ORDER BY 3
+            """)
+    index_lines = []
+    for (code, name), g in idx.groupby(["code", "name"]):
+        g = g[g["月"].isin(months)].sort_values("月")
+        if g.empty:
+            continue
+        base = float(g["px"].iloc[0])
+        index_lines.append({
+            "code": code, "name": name,
+            "曲线": [{"月": r["月"], "涨跌幅": float(r["px"]) / base - 1}
+                     for _, r in g.iterrows()],
+            "区间涨跌": float(g["px"].iloc[-1]) / base - 1,
+            "年化": _annualized(float(g["px"].iloc[-1]) / base - 1, buse["年数"]),
+        })
+
     return {
         "horizon": horizon,
         "capital": capital,
         "min_trades": min_trades,
-        "entry_rule": "研报发布次日开盘价买入；开盘涨停顺延，连续涨停超 5 日放弃",
+        "bench_index": bench_index,
+        "indexes": index_lines,
+        "buy": buy,
+        "exit_signal": exit_signal,
+        "entry_rule": (
+            f"仅买{'「买入」' if buy == 'strict' else '看多（买入/增持）'}评级；"
+            "发布次日开盘价买入，开盘涨停顺延，连续涨停超 5 日放弃"),
+        "exit_rule": {
+            "none": f"固定持有 {horizon} 个交易日",
+            "bearish": f"持有 {horizon} 个交易日，或任意机构给出非看多评级后次日离场",
+            "downgrade": f"持有 {horizon} 个交易日，或**同机构**下调评级后次日离场",
+            "any_downgrade": f"持有 {horizon} 个交易日，或任意机构下调评级后次日离场",
+        }[exit_signal],
+        "提前离场笔数": int(trades["提前离场"].sum()),
         "benchmark": benchmark,
         "beat_benchmark": beat,
         "institutions": out,
@@ -1772,6 +1949,9 @@ def institution_trades(
     institution: str,
     horizon: int = 20,
     capital: float = 10000,
+    buy: Annotated[str, Query(pattern="^(strict|bullish)$")] = "bullish",
+    exit_signal: Annotated[
+        str, Query(pattern="^(none|bearish|downgrade|any_downgrade)$")] = "none",
 ) -> dict:
     """某机构的每一份研报作为一笔交易，逐笔列出。
 
@@ -1783,9 +1963,14 @@ def institution_trades(
     App 看到的一致，后者必须正确处理持有期内的除权除息。二者对不上时
     `除权` 为真，差额即分红送转——那部分钱确实拿到了，只是不在价格里。
     """
+    frag, exit_rn = _exit_join(exit_signal)
+    join_sig = ("LEFT JOIN sig_rn sr ON sr.code = e.code "
+                "AND sr.publish_date = e.publish_date "
+                "AND sr.institution = e.institution AND sr.title = e.title"
+                if frag else "")
     with read_db() as db:
         trades = db.query(
-            ENTRY_CTE + """
+            ENTRY_CTE.format(buy_ratings=BUY_RATING_SETS[buy]) + frag + f"""
             SELECT e.publish_date        AS 发布日,
                    e.code                AS 代码,
                    b.name                AS 股票,
@@ -1796,17 +1981,21 @@ def institution_trades(
                    e.deferred            AS 顺延,
                    x.trade_date          AS 卖出日,
                    x.close               AS 卖出价,
+                   x.rn - e.ern          AS 持有交易日,
+                   x.rn - e.ern < {horizon} AS 提前离场,
                    (x.close * x.adj_factor / e.buy_adj) - 1 AS 收益率,
-                   ((x.close * x.adj_factor / e.buy_adj) - 1) * ? AS 盈亏,
+                   ((x.close * x.adj_factor / e.buy_adj) - 1) * {capital} AS 盈亏,
                    abs((x.close * x.adj_factor / e.buy_adj)
                        - (x.close / e.buy_px)) > 0.001 AS 除权
             FROM entry e
             JOIN mx ON mx.code = e.code
-            JOIN q x ON x.code = e.code AND x.rn = e.ern + ?
+            {join_sig}
             LEFT JOIN stock_basic b ON b.code = e.code
-            WHERE e.institution = ? AND e.ern + ? <= mx.last_rn
+            JOIN q x ON x.code = e.code
+                    AND x.rn = {exit_rn.format(h=horizon)}
+            WHERE e.institution = '{institution}' AND e.ern + 1 <= mx.last_rn
             ORDER BY e.publish_date DESC
-            """, [capital, horizon, institution, horizon])
+            """)
 
     if trades.empty:
         return {"institution": institution, "horizon": horizon,
@@ -1845,6 +2034,8 @@ def institution_trades(
                    if (ret < 0).any() and (ret > 0).any() else None),
         "含除权笔数": int(trades["除权"].sum()),
         "涨停顺延笔数": int((trades["顺延"] > 0).sum()),
+        "提前离场笔数": int(trades["提前离场"].sum()),
+        "平均持有日": round(float(trades["持有交易日"].mean()), 1),
     }
 
     return {
