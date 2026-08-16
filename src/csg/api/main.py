@@ -757,3 +757,115 @@ def report_analysis(
             "financials_pit": fin_periods,
             "pit_note": "财务数据为研报发布时点已披露者，非最新",
         }
+
+
+# ----------------------------------------------------------------------
+# 机构研报胜率统计
+# ----------------------------------------------------------------------
+
+@app.get("/api/institution-stats")
+def institution_stats(
+    horizon: Annotated[int, Query(ge=20, le=250, description="考察窗口，交易日")] = 250,
+    group_by: Annotated[str, Query(pattern="^(year|half|quarter|all)$")] = "year",
+    min_samples: Annotated[int, Query(ge=5)] = 10,
+    institution: str | None = None,
+) -> dict:
+    """机构研报的胜率与超额收益，按时间分组。
+
+    **两条必须理解的设计：**
+
+    1. **排除未走完窗口的研报**。发布日 + horizon 个交易日若超出数据末日，
+       该研报尚无结果，纳入统计会系统性高估或低估——取决于最近这段
+       行情涨跌，属于典型的幸存者式偏差。
+
+    2. **胜率以超额收益为准，不是绝对收益**。牛市里所有研报都"赢"，
+       那不是研报的功劳。超额 = 个股收益 − 同月全样本中位数。
+
+    ⚠️ 解读警告：已验证机构排名的跨期秩相关为 −0.286（比随机更差），
+    故本表**不可用作未来的机构权重**。它的用途是查看历史分布，
+    而非挑选"最准的机构"。
+    """
+    period_expr = {
+        "year": "CAST(year(o.publish_date) AS VARCHAR)",
+        "half": "CAST(year(o.publish_date) AS VARCHAR) || 'H' || "
+                "CAST(CASE WHEN month(o.publish_date) <= 6 THEN 1 ELSE 2 END AS VARCHAR)",
+        "quarter": "CAST(year(o.publish_date) AS VARCHAR) || 'Q' || "
+                   "CAST(quarter(o.publish_date) AS VARCHAR)",
+        "all": "'全期'",
+    }[group_by]
+
+    inst_filter = "AND r.institution = ?" if institution else ""
+    params: list = [horizon, horizon]
+    if institution:
+        params.append(institution)
+    params += [min_samples]
+
+    with read_db() as db:
+        sql = f"""
+        WITH px AS (
+            SELECT code, trade_date, close * adj_factor AS p,
+                   row_number() OVER (PARTITION BY code ORDER BY trade_date) AS rn
+            FROM daily_quote
+            WHERE close IS NOT NULL AND adj_factor IS NOT NULL AND close > 0
+        ),
+        maxrn AS (SELECT code, max(rn) AS last_rn FROM px GROUP BY code),
+        ent AS (
+            SELECT r.code, r.publish_date, r.institution, r.rating,
+                   min(px.rn) AS entry_rn
+            FROM research_report r
+            JOIN px ON px.code = r.code AND px.trade_date > r.publish_date
+            WHERE r.rating IS NOT NULL AND r.rating <> '' {inst_filter}
+            GROUP BY r.code, r.publish_date, r.institution, r.rating
+        ),
+        outcome AS (
+            SELECT e.code, e.publish_date, e.institution, e.rating,
+                   (h.p / en.p) - 1 AS ret
+            FROM ent e
+            JOIN maxrn m ON m.code = e.code
+            JOIN px en ON en.code = e.code AND en.rn = e.entry_rn
+            JOIN px h  ON h.code  = e.code AND h.rn  = e.entry_rn + ?
+            -- 只保留窗口已走完的：入场点 + horizon 不得超出该股数据末端
+            WHERE e.entry_rn + ? <= m.last_rn
+        ),
+        benched AS (
+            SELECT o.*,
+                   o.ret - median(o.ret) OVER (
+                       PARTITION BY date_trunc('month', o.publish_date)
+                   ) AS excess
+            FROM outcome o
+        )
+        SELECT {period_expr.replace('o.', '')} AS 期间,
+               institution AS 机构,
+               count(*) AS 样本数,
+               round(median(excess), 4) AS 超额中位,
+               round(avg(CASE WHEN excess > 0 THEN 1.0 ELSE 0.0 END), 3) AS 胜率,
+               round(median(ret), 4) AS 绝对收益中位,
+               round(min(excess), 4) AS 最差,
+               round(max(excess), 4) AS 最好
+        FROM benched o
+        GROUP BY 1, 2
+        HAVING count(*) >= ?
+        ORDER BY 1 DESC, 超额中位 DESC
+        """
+        rows = db.query(sql, params)
+
+        coverage = db.query(
+            """
+            SELECT count(*) AS 研报总数,
+                   CAST(max(publish_date) AS VARCHAR) AS 最新研报,
+                   CAST(max(trade_date) AS VARCHAR) AS 行情末日
+            FROM research_report, (SELECT max(trade_date) AS trade_date FROM daily_quote)
+            """)
+
+        return {
+            "horizon": horizon,
+            "group_by": group_by,
+            "coverage": _records(coverage)[0] if not coverage.empty else None,
+            "rows": _records(rows),
+            "caveat": (
+                "胜率以超额收益（个股收益 − 同月全样本中位数）为准；"
+                "已排除窗口未走完的研报。"
+                "⚠️ 机构排名的跨期秩相关实测为 −0.286（比随机更差），"
+                "本表仅供查看历史分布，不可用作未来的机构权重。"
+            ),
+        }

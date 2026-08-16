@@ -1,6 +1,8 @@
 import { NavLink, Route, Routes } from "react-router-dom";
+import { useTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 import Dashboard from "@/pages/Dashboard";
+import InstitutionStats from "@/pages/InstitutionStats";
 import ReportAnalysis from "@/pages/ReportAnalysis";
 import Reports from "@/pages/Reports";
 import StockDetail from "@/pages/StockDetail";
@@ -12,10 +14,13 @@ const NAV = [
   { to: "/", label: "总览", end: true },
   { to: "/tasks", label: "复核任务" },
   { to: "/reports", label: "研报检索" },
+  { to: "/institutions", label: "机构胜率" },
   { to: "/validations", label: "验证结果" },
 ];
 
 export default function App() {
+  const { theme, toggle } = useTheme();
+
   return (
     <div className="flex h-full flex-col">
       <header className="flex items-center gap-6 border-[var(--color-border)] border-b px-5 py-3">
@@ -42,6 +47,14 @@ export default function App() {
         <span className="ml-auto text-[var(--color-muted)] text-xs">
           判断归你，系统只整理事实
         </span>
+        <button
+          type="button"
+          onClick={toggle}
+          title={theme === "dark" ? "切换到亮色" : "切换到暗色"}
+          className="rounded border border-[var(--color-border)] px-2 py-1 text-sm transition-colors hover:bg-[var(--color-surface)]"
+        >
+          {theme === "dark" ? "☀" : "☾"}
+        </button>
       </header>
 
       <main className="flex-1 overflow-auto p-5">
@@ -52,6 +65,7 @@ export default function App() {
           <Route path="/stocks/:code" element={<StockDetail />} />
           <Route path="/reports" element={<Reports />} />
           <Route path="/reports/:reportId" element={<ReportAnalysis />} />
+          <Route path="/institutions" element={<InstitutionStats />} />
           <Route path="/validations" element={<Validations />} />
         </Routes>
       </main>

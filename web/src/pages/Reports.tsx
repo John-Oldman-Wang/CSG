@@ -11,23 +11,39 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api, DataLockedError } from "@/api/client";
 import { Badge, Button, Card, CardTitle, DataLocked } from "@/components/ui/primitives";
+import { useTheme } from "@/lib/theme";
 import type { RatingChange, ReportFilters, ReportRow } from "@/types";
 
 ModuleRegistry.registerModules([AllCommunityModule]);
 
-/** ag-grid 主题对齐项目暗色配色，避免出现与其余界面割裂的白底表格。 */
-const gridTheme = themeQuartz.withParams({
-  backgroundColor: "#1a1d23",
-  foregroundColor: "#e8e9ec",
-  headerBackgroundColor: "#22262e",
-  headerTextColor: "#9aa0aa",
-  borderColor: "#333842",
-  rowHoverColor: "#22262e",
-  oddRowBackgroundColor: "transparent",
-  fontFamily: "inherit",
-  fontSize: 13,
-  headerFontSize: 12,
-});
+/** ag-grid 配色由 JS 参数设定，不随 CSS 变量切换，故按主题各备一套，
+ *  避免出现与其余界面割裂的白底（或黑底）表格。 */
+const GRID_THEMES = {
+  dark: themeQuartz.withParams({
+    backgroundColor: "#1a1d23",
+    foregroundColor: "#e8e9ec",
+    headerBackgroundColor: "#22262e",
+    headerTextColor: "#9aa0aa",
+    borderColor: "#333842",
+    rowHoverColor: "#22262e",
+    oddRowBackgroundColor: "transparent",
+    fontFamily: "inherit",
+    fontSize: 13,
+    headerFontSize: 12,
+  }),
+  light: themeQuartz.withParams({
+    backgroundColor: "#fbfbfc",
+    foregroundColor: "#2b2f3a",
+    headerBackgroundColor: "#f2f3f6",
+    headerTextColor: "#5a6072",
+    borderColor: "#dcdee5",
+    rowHoverColor: "#f2f3f6",
+    oddRowBackgroundColor: "transparent",
+    fontFamily: "inherit",
+    fontSize: 13,
+    headerFontSize: 12,
+  }),
+} as const;
 
 /** 评级调整方向。
  *  down 单独高亮：绝对评级 94% 是买入、几乎无区分度，
@@ -42,6 +58,7 @@ const CHANGE_META: Record<RatingChange, { label: string; cls: string }> = {
 const PAGE_SIZE = 50;
 
 export default function Reports() {
+  const { theme } = useTheme();
   // URL 是筛选状态的唯一真相源：链接可分享、刷新不丢、浏览器前进后退可用。
   // form 只是用户正在输入的临时态，点「查询」后才写回 URL。
   const [searchParams, setSearchParams] = useSearchParams();
@@ -309,7 +326,7 @@ export default function Reports() {
       <Card className="p-0">
         <div style={{ height: 560 }}>
           <AgGridReact<ReportRow>
-            theme={gridTheme}
+            theme={GRID_THEMES[theme]}
             rowData={query.data?.items ?? []}
             columnDefs={columns}
             defaultColDef={{ sortable: true, resizable: true, suppressMovable: false }}

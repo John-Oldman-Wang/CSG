@@ -117,13 +117,16 @@ def run_backtest(
             rets = _period_returns(db, selected["code"].tolist(), cursor, next_date)
             gross = float(rets["ret"].mean()) if not rets.empty else 0.0
             net = gross - cfg.cost_bps / 10_000 * 2
+            bench, bench_n = _benchmark_return(db, cursor, next_date)
             periods.append({
                 "start": cursor,
                 "end": next_date,
                 "选中数": len(selected),
                 "实际有行情数": len(rets),
-                "毛收益": round(gross, 4),
                 "净收益": round(net, 4),
+                "基准": round(bench, 4),
+                "超额": round(net - bench, 4),
+                "基准样本": bench_n,
                 "胜率": round(float((rets["ret"] > 0).mean()), 3)
                 if not rets.empty else None,
                 "codes": ",".join(selected["code"].head(10)),
@@ -133,6 +136,28 @@ def run_backtest(
 
     detail = pd.DataFrame(periods)
     return detail, _summarize(detail, cfg)
+
+
+def _benchmark_return(
+    db: Database, start: dt.date, end: dt.date
+) -> tuple[float, int]:
+    """基准：同期**时点股票池内全部个股**的等权收益中位数。
+
+    **没有基准，收益率无法解读**——若同期整个市场涨 20%，
+    那么 8% 的年化实际上是负贡献。
+
+    为何不用指数：本项目未采集指数行情，且股票池限定在新能源+AI，
+    用沪深300 对照会混入赛道差异。用池内全体作基准，
+    衡量的是「筛选相对于随机持有该赛道」的增量——这正是筛选层
+    应当被检验的东西。
+    """
+    pool = db.pit_universe(start)
+    if pool.empty:
+        return 0.0, 0
+    rets = _period_returns(db, pool["code"].tolist(), start, end)
+    if rets.empty:
+        return 0.0, 0
+    return float(rets["ret"].median()), len(rets)
 
 
 def _period_returns(
@@ -173,21 +198,33 @@ def _summarize(detail: pd.DataFrame, cfg: BacktestConfig) -> dict:
         return {"说明": "无有效回测区间，请先完成行情与财务数据采集"}
 
     net = detail["净收益"].astype(float)
+    bench = detail["基准"].astype(float)
     cumulative = float((1 + net).prod() - 1)
+    bench_cum = float((1 + bench).prod() - 1)
     years = max((cfg.end - cfg.start).days / 365.25, 1e-9)
     annualized = (1 + cumulative) ** (1 / years) - 1
+    bench_ann = (1 + bench_cum) ** (1 / years) - 1
 
     equity = (1 + net).cumprod()
     drawdown = float((equity / equity.cummax() - 1).min())
+    bench_equity = (1 + bench).cumprod()
+    bench_dd = float((bench_equity / bench_equity.cummax() - 1).min())
 
     return {
         "区间": f"{cfg.start} ~ {cfg.end}",
         "调仓次数": len(detail),
-        "累计净收益": round(cumulative, 4),
-        "年化": round(float(annualized), 4),
-        "最大回撤": round(drawdown, 4),
+        "策略累计": round(cumulative, 4),
+        "基准累计": round(bench_cum, 4),
+        "策略年化": round(float(annualized), 4),
+        "基准年化": round(float(bench_ann), 4),
+        "年化超额": round(float(annualized - bench_ann), 4),
+        "策略最大回撤": round(drawdown, 4),
+        "基准最大回撤": round(bench_dd, 4),
+        "跑赢基准期数": f"{int((net > bench).sum())}/{len(detail)}",
         "单期胜率": round(float((net > 0).mean()), 3),
         "平均每期选中": round(float(detail["选中数"].mean()), 1),
         "⚠️ 声明": "本结果仅验证机械筛选层，不构成对方法论的验证；"
-                   "方法论中人的判断部分无法回测",
+                   "方法论中人的判断部分无法回测。"
+                   "基准为同期池内全体个股等权中位数——"
+                   "衡量的是筛选相对于随机持有该赛道的增量",
     }

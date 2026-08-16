@@ -292,9 +292,26 @@ def validate_flags(
         for k, v in summary.items():
             console.print(f"  [cyan]{k}[/cyan]: {v}")
 
+        # 误报率：被预警但此后未暴雷的比例。
+        # **没有它，覆盖率毫无意义**——把所有股票都标红，覆盖率必然 100%。
+        # 取多个时点分别评估，避免单一时点的特殊性（如恰逢牛熊转换）。
+        console.print("\n[bold]误报率（被预警但此后未暴雷）[/bold]")
+        rows = []
+        for year in (2019, 2020, 2021, 2022):
+            as_of = dt.date(year, 6, 30)
+            codes = db.pit_universe(as_of)["code"].tolist()
+            if not codes:
+                continue
+            fp = flag_backtest.false_positive_rate(
+                db, as_of, events, codes=codes, min_score=min_score)
+            if "预警数" in fp:
+                rows.append(fp)
+        if rows:
+            _show(pd.DataFrame(rows), "各时点误报率")
+
         console.print(
-            "\n[yellow]注意：覆盖率必须与误报率同看。"
-            "把所有股票都标红，覆盖率必然 100%。[/yellow]")
+            "\n[yellow]解读：覆盖率与误报率必须同看。"
+            "覆盖率高但误报率也高，说明规则只是把大量公司无差别标红。[/yellow]")
 
 
 @validate_app.command("research")

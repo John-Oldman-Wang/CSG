@@ -248,3 +248,22 @@ export interface ReportAnalysis {
   financials_pit: FinancialPeriod[];
   pit_note: string;
 }
+
+export interface InstitutionStatRow {
+  期间: string;
+  机构: string;
+  样本数: number;
+  超额中位: number | null;
+  胜率: number | null;
+  绝对收益中位: number | null;
+  最差: number | null;
+  最好: number | null;
+}
+
+export interface InstitutionStats {
+  horizon: number;
+  group_by: string;
+  coverage: { 研报总数: number; 最新研报: string; 行情末日: string } | null;
+  rows: InstitutionStatRow[];
+  caveat: string;
+}

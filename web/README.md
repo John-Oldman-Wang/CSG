@@ -1,32 +1,42 @@
-# React + TypeScript + Vite
+# web — 前端
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+## 做什么
 
-Currently, two official plugins are available:
+数据可视化与复核任务的交互界面。
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```
+React 19 + Vite 8 + TypeScript + Tailwind v4 + shadcn 风格组件
+TanStack Query（服务端状态）· React Router v7 · Biome
+Lightweight Charts（K线）· ECharts（统计图）· ag-grid（研报检索表格）
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+## 页面
+
+```
+/              总览：待办复核 / 股票池 / 数据状态
+/tasks         复核任务列表
+/tasks/:id     复核详情 ★ 方法论在界面上的落点
+/reports       研报检索（筛选条件写入 URL query）
+/reports/:id   研报分析：公司信息条 + K线 + 发布后表现 + PIT财务
+/stocks/:code  个股详情
+/validations   验证结果对照
+```
+
+## 界面上的三条方法论约束
+
+**① 复核页默认隐藏持仓成本与浮盈亏。** 需主动点击才展开，展开后仍提示
+「成本价不应参与本次判断」。沉没成本是复核环节最大的干扰源。
+
+**② 「事实（系统整理）」与「待你判断（由你回答）」视觉分区。**
+这条边界若在界面上模糊，久之会把系统整理的材料误当成系统的结论。
+
+**③ 强制必答 + 矛盾检测。** 「以今天的价格和信息，我会重新买入吗？」
+是必填项；若选「情绪面」（假设未动摇）却答「不会买入」，提交后提示矛盾。
+
+## 其他约定
+
+- **红涨绿跌**（A 股惯例，与图表库默认及欧美市场相反）
+- **等宽数字**（`tabular-nums`），财务表格数字列才对得齐
+- **K线传后复权价**——它不因未来除权事件改变历史值
+- **研报评级不突出显示**（买入占 94% 无区分度），改为标记「评级变化」
+- 缺失值显示「—」而非 0

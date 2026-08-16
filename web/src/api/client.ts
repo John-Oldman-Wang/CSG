@@ -5,6 +5,7 @@ import type {
   FinancialPeriod,
   HealthInfo,
   Institution,
+  InstitutionStats,
   ReportAnalysis,
   ReportFilters,
   ReportSearchResult,
@@ -121,6 +122,19 @@ export const api = {
     ),
 
   reportIndustries: () => get<{ name: string; report_count: number }[]>("/report-industries"),
+
+  institutionStats: (params: {
+    horizon?: number;
+    group_by?: "year" | "half" | "quarter" | "all";
+    min_samples?: number;
+    institution?: string;
+  }) => {
+    const q: Record<string, string | number> = {};
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined && v !== "") q[k] = v as string | number;
+    }
+    return get<InstitutionStats>("/institution-stats", q);
+  },
 
   watchlist: () => get<(WatchlistEntry & { name: string | null })[]>("/watchlist"),
 };

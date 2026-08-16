@@ -1,6 +1,14 @@
 @import "tailwindcss";
 
-/* 投研界面以数据密度为先：暗色背景 + 高对比数字，长时间盯盘不易疲劳 */
+/* 主题变量。
+ *
+ * 暗色为默认：投研界面数据密度高，长时间盯盘时暗色更省眼。
+ * 亮色供白天或投屏使用。
+ *
+ * ⚠️ A 股红涨绿跌，与欧美市场相反。两套主题下都必须保持这个约定——
+ *    套用国际惯例会让每个中国用户第一眼读反。
+ */
+
 @theme {
   --color-bg: oklch(0.16 0.01 260);
   --color-surface: oklch(0.21 0.012 260);
@@ -8,9 +16,8 @@
   --color-fg: oklch(0.92 0.005 260);
   --color-muted: oklch(0.62 0.01 260);
 
-  /* A 股配色：红涨绿跌，与国际相反。切勿套用国际惯例 */
-  --color-up: oklch(0.62 0.2 25);
-  --color-down: oklch(0.68 0.16 155);
+  --color-up: oklch(0.62 0.2 25);      /* 涨 —— 红 */
+  --color-down: oklch(0.68 0.16 155);  /* 跌 —— 绿 */
 
   --color-p0: oklch(0.6 0.22 25);
   --color-p1: oklch(0.72 0.16 65);
@@ -19,13 +26,38 @@
   --font-mono: "JetBrains Mono", "SF Mono", ui-monospace, monospace;
 }
 
-html, body, #root { height: 100%; }
+/* 亮色主题：仅覆写颜色，不改结构。
+ * 涨跌色需重新调校——同一组 oklch 值在浅背景上对比度不足。 */
+[data-theme="light"] {
+  --color-bg: oklch(0.99 0.002 260);
+  --color-surface: oklch(0.97 0.004 260);
+  --color-border: oklch(0.89 0.006 260);
+  --color-fg: oklch(0.22 0.01 260);
+  --color-muted: oklch(0.52 0.012 260);
+
+  --color-up: oklch(0.52 0.21 25);
+  --color-down: oklch(0.5 0.15 155);
+
+  --color-p0: oklch(0.52 0.22 25);
+  --color-p1: oklch(0.58 0.15 65);
+  --color-p2: oklch(0.52 0.14 250);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
 
 body {
   background: var(--color-bg);
   color: var(--color-fg);
-  font-feature-settings: "tnum";  /* 等宽数字，表格里数字列才对得齐 */
+  font-feature-settings: "tnum"; /* 等宽数字，表格里数字列才对得齐 */
+  transition: background-color 0.15s ease, color 0.15s ease;
 }
 
 /* 财务数字统一等宽，避免跳动 */
-.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}

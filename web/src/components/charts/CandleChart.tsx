@@ -7,6 +7,7 @@ import {
   type UTCTimestamp,
 } from "lightweight-charts";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTheme } from "@/lib/theme";
 import type { Candle } from "@/types";
 
 /**
@@ -36,6 +37,7 @@ export default function CandleChart({
    *  调用方须自行在图外说明其来源，图上只画线不作解释。 */
   priceLines?: { price: number; title: string; color?: string }[];
 }) {
+  const { theme } = useTheme();
   const ref = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   // 悬停的那根 K 线。null 表示鼠标移出图表区域，此时显示最后一根。
@@ -51,6 +53,9 @@ export default function CandleChart({
     return m;
   }, [data]);
 
+  const gridColor = theme === "dark" ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.05)";
+  const borderColor = theme === "dark" ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.12)";
+
   useEffect(() => {
     if (!ref.current || data.length === 0) return;
 
@@ -58,15 +63,16 @@ export default function CandleChart({
       height,
       layout: {
         background: { color: "transparent" },
-        textColor: "#9aa0aa",
+        // 图表颜色由 JS 设定，不会随 CSS 变量自动切换，故须显式感知主题
+        textColor: theme === "dark" ? "#9aa0aa" : "#5a6072",
         fontFamily: "ui-monospace, monospace",
       },
       grid: {
-        vertLines: { color: "rgba(255,255,255,0.04)" },
-        horzLines: { color: "rgba(255,255,255,0.04)" },
+        vertLines: { color: gridColor },
+        horzLines: { color: gridColor },
       },
-      rightPriceScale: { borderColor: "rgba(255,255,255,0.1)" },
-      timeScale: { borderColor: "rgba(255,255,255,0.1)", rightOffset: 5 },
+      rightPriceScale: { borderColor: borderColor },
+      timeScale: { borderColor: borderColor, rightOffset: 5 },
       crosshair: { mode: 0 },
     });
     chartRef.current = chart;
@@ -151,7 +157,7 @@ export default function CandleChart({
       chart.remove();
       chartRef.current = null;
     };
-  }, [data, height, markers, priceLines, byTime]);
+  }, [data, height, markers, priceLines, byTime, theme, gridColor, borderColor]);
 
   if (data.length === 0) {
     return (
