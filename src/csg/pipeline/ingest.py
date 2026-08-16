@@ -314,6 +314,19 @@ class Ingestor:
         today = dt.date.today()
 
         for i, code in enumerate(codes, 1):
+            # ⚠️ 进度打印必须在**循环体开头**，不能放末尾。
+            #
+            # 事故（2026-08-17）：原先放在末尾，而它前面有两处 continue
+            # （水位跳过、该股无研报）。于是第 250/275/300 只恰好被跳过时，
+            # 那三行进度**永远不会打印**——日志从 225 直接跳到 325，
+            # 中间静默 10 分钟。
+            #
+            # 最坏之处在于：跳过越多、日志越安静，而「跳过很多」恰恰
+            # 发生在续跑时——那正是你最需要确认它还活着的时候。
+            # 我据此误判为进程挂起，几乎错杀了一个正常运行的采集。
+            if i % 25 == 1 or i == len(codes):
+                log.info("研报进度 %d/%d %s", i - 1, len(codes), stats)
+
             if not force:
                 wm = self.db.get_watermark(ds, code)
                 if wm is not None and (today - wm).days < refresh_days:
@@ -345,9 +358,6 @@ class Ingestor:
                                       error=str(exc)[:300])
                 stats["failed"] += 1
                 log.warning("[%d/%d] %s 研报失败: %s", i, len(codes), code, exc)
-
-            if i % 25 == 0:
-                log.info("研报进度 %d/%d %s", i, len(codes), stats)
 
         return stats
 
