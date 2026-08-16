@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import math
 from contextlib import contextmanager
 from typing import Annotated, Any
 
@@ -92,7 +93,7 @@ def _records(df) -> list[dict[str, Any]]:
     out = df.to_dict(orient="records")
     for row in out:
         for k, v in row.items():
-            if v is None or (isinstance(v, float) and v != v):  # NaN != NaN
+            if v is None or (isinstance(v, float) and math.isnan(v)):
                 row[k] = None
             elif isinstance(v, (dt.date, dt.datetime)):
                 row[k] = v.isoformat()
