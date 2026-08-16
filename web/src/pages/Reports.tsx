@@ -10,7 +10,14 @@ import { AgGridReact } from "ag-grid-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api, DataLockedError } from "@/api/client";
-import { Badge, Button, Card, CardTitle, DataLocked } from "@/components/ui/primitives";
+import {
+  Badge,
+  Button,
+  Card,
+  CardTitle,
+  DataLocked,
+  WinRateBadge,
+} from "@/components/ui/primitives";
 import { useTheme } from "@/lib/theme";
 import type { RatingChange, ReportFilters, ReportRow } from "@/types";
 
@@ -48,11 +55,14 @@ const GRID_THEMES = {
 /** 评级调整方向。
  *  down 单独高亮：绝对评级 94% 是买入、几乎无区分度，
  *  真正携带信息的是「谁改了主意」，尤其是逆着激励机制的下调。 */
-const CHANGE_META: Record<RatingChange, { label: string; cls: string }> = {
-  down: { label: "下调", cls: "text-[var(--color-p0)] font-medium" },
-  up: { label: "上调", cls: "text-[var(--color-muted)]" },
-  unchanged: { label: "维持", cls: "text-[var(--color-muted)] opacity-60" },
-  first: { label: "首次", cls: "text-[var(--color-p2)]" },
+const CHANGE_META: Record<
+  RatingChange,
+  { label: string; tone: "P0" | "P1" | "P2" | "default" }
+> = {
+  down: { label: "下调", tone: "P0" },
+  up: { label: "上调", tone: "default" },
+  unchanged: { label: "维持", tone: "default" },
+  first: { label: "首次", tone: "P2" },
 };
 
 const PAGE_SIZE = 50;
@@ -89,6 +99,21 @@ export default function Reports() {
     queryFn: api.reportIndustries,
   });
 
+  // 机构历史胜率：一次取回做成 Map，供表格逐行查找，
+  // 避免每行单独请求
+  const winrates = useQuery({
+    queryKey: ["institutionWinRates"],
+    queryFn: () => api.institutionWinRates(60, 10),
+    staleTime: 5 * 60_000,
+  });
+  const wrMap = useMemo(() => {
+    const m = new Map<string, { w: number | null; n: number }>();
+    for (const r of winrates.data?.rows ?? []) {
+      m.set(r.机构, { w: r.w3, n: r.n3 });
+    }
+    return m;
+  }, [winrates.data]);
+
   const query = useQuery({
     queryKey: ["reports", applied, page],
     queryFn: () => api.searchReports({ ...applied, page, page_size: PAGE_SIZE }),
@@ -118,7 +143,20 @@ export default function Reports() {
       },
       { field: "stock_name", headerName: "股票", width: 110 },
       { field: "industry", headerName: "行业", width: 100 },
-      { field: "institution", headerName: "机构", width: 130 },
+      {
+        field: "institution",
+        headerName: "机构",
+        width: 190,
+        cellRenderer: (p: { value: string }) => {
+          const wr = wrMap.get(p.value);
+          return (
+            <span className="flex items-center gap-1.5">
+              <span className="truncate">{p.value}</span>
+              {wr && <WinRateBadge rate={wr.w} samples={wr.n} minSamples={10} />}
+            </span>
+          );
+        },
+      },
       {
         field: "title",
         headerName: "报告名称",
@@ -144,10 +182,10 @@ export default function Reports() {
           if (!d) return null;
           const meta = CHANGE_META[d.rating_change];
           return (
-            <span className={meta.cls}>
-              {meta.label}
+            <span className="flex items-center gap-1.5">
+              <Badge tone={meta.tone}>{meta.label}</Badge>
               {d.prev_rating && d.rating_change !== "first" && (
-                <span className="ml-1 text-[var(--color-muted)] text-xs">
+                <span className="text-[var(--color-muted)] text-xs">
                   {d.prev_rating}→{d.rating}
                 </span>
               )}
@@ -159,8 +197,7 @@ export default function Reports() {
         field: "has_forecast",
         headerName: "预测",
         width: 70,
-        cellRenderer: (p: { value: boolean }) =>
-          p.value ? <span className="text-[var(--color-p2)]">有</span> : null,
+        cellRenderer: (p: { value: boolean }) => (p.value ? <Badge tone="P2">有</Badge> : null),
       },
       {
         field: "pdf_url",
@@ -175,7 +212,7 @@ export default function Reports() {
           ) : null,
       },
     ],
-    [],
+    [wrMap],
   );
 
   function set<K extends keyof ReportFilters>(key: K, value: ReportFilters[K]) {
@@ -308,6 +345,15 @@ export default function Reports() {
             </select>
           </Field>
         </div>
+
+        <p className="mt-3 border-[var(--color-border)] border-t pt-3 text-[var(--color-muted)] text-xs leading-relaxed">
+          机构名后的徽章为<b>该机构近三年胜率</b>（60 交易日窗口，超额收益口径，
+          括号内为样本量，不足 10 条置灰）。
+          <span className="text-[var(--color-p1)]">
+            ⚠️ 不可据此挑选机构——实测机构排名跨期秩相关 −0.286，历史排名不可外推。
+          </span>
+          它的用途是提供背景，例如「这家机构历史胜率仅四成」有助于你对这份研报 保持应有的怀疑。
+        </p>
 
         <div className="mt-3 flex items-center gap-2">
           <Button onClick={search}>查询</Button>
