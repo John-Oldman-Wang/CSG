@@ -535,8 +535,20 @@ export interface InstitutionCurvesResp {
   capital: number;
   min_trades: number;
   bench_index: string;
-  /** 研报样本的系统性缺口：数据源不含任何头部券商 */
-  sample_caveat: { source: string; missing: string[]; note: string };
+  /** 研报样本的覆盖缺口。后端实时查库计算，不写死名单 ——
+   *  硬编码的事实会随数据变化变成谎言，且没有机制提醒你它过期了。 */
+  sample_caveat?: {
+    sources: { source: string; n: number; insts: number }[];
+    top_have: {
+      机构: string;
+      n: number;
+      股票: number;
+      最早: string;
+      最晚: string;
+    }[];
+    top_missing: string[];
+    note: string;
+  };
   /** 是否按 A 股整手（1 手 = 100 股）建模 */
   round_lot: boolean;
   /** 单笔金额买不起 1 手而无法建仓的笔数。越大说明结果越依赖单笔金额这个隐含筛选器 */

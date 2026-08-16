@@ -217,24 +217,57 @@ export function InstitutionCurves({ onPick }: { onPick?: (institution: string) =
         跟着每家机构买的累计曲线
       </CardTitle>
 
-      {/* 样本缺口必须常驻，不能折叠：读者每看一眼这张图，
-          都在无意识地把它当成「券商研报的表现」，而它不是。 */}
-      <div className="mb-3 rounded border border-[var(--color-p0)]/40 bg-[var(--color-p0)]/5 p-3">
-        <div className="font-medium text-[var(--color-p0)] text-sm">⚠️ 样本不含任何头部券商</div>
-        <p className="mt-1 text-[var(--color-muted)] text-xs leading-relaxed">
-          数据源为{data.sample_caveat.source}，其中
-          <b className="text-[var(--color-fg)]"> {data.sample_caveat.missing.join(" / ")} </b>
-          全部缺失。已直接调接口核对：宁德时代接口返回 469 条、库中 469 条——
-          <b>缺在源头，不是采集遗漏</b>。
-          推断因其研究是卖给付费机构客户的产品，不授权免费渠道转发；
-          中小券商则把东财当获客渠道。
-          <br />
-          <b className="text-[var(--color-p0)]">
-            因此本页所有结论只适用于「东财免费渠道的中小券商」，
-            不可推广为「券商研报无价值」——头部券商的研究我们从未观察到过。
-          </b>
-        </p>
-      </div>
+      {/* 样本覆盖必须常驻，不能折叠：读者每看一眼这张图，
+          都在无意识地把它当成「券商研报的表现」，而它只是部分券商。
+          `?.` 是必须的——曾因后端字段缺失导致整个组件白屏。 */}
+      {data.sample_caveat && (
+        <div
+          className={`mb-3 rounded border p-3 ${
+            data.sample_caveat.top_missing.length > 0
+              ? "border-[var(--color-p1)]/40 bg-[var(--color-p1)]/5"
+              : "border-[var(--color-border)]"
+          }`}
+        >
+          <div className="font-medium text-[var(--color-p1)] text-sm">
+            ⚠️ 样本覆盖：头部券商 {data.sample_caveat.top_have.length}/
+            {data.sample_caveat.top_have.length + data.sample_caveat.top_missing.length} 家在库
+          </div>
+
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {data.sample_caveat.top_have.map((b) => (
+              <span
+                key={b.机构}
+                className="rounded border border-[var(--color-up)]/40 bg-[var(--color-up)]/10 px-1.5 py-0.5 text-[var(--color-up)] text-xs"
+                title={`${b.n} 条 / ${b.股票} 只 / ${String(b.最早).slice(0, 10)} ~ ${String(b.最晚).slice(0, 10)}`}
+              >
+                {b.机构} <span className="num opacity-70">{b.n}</span>
+              </span>
+            ))}
+            {data.sample_caveat.top_missing.map((m) => (
+              <span
+                key={m}
+                className="rounded border border-[var(--color-border)] px-1.5 py-0.5 text-[var(--color-muted)] text-xs line-through opacity-60"
+                title="三个免费渠道（东财 / 同花顺 / 慧博）均无"
+              >
+                {m}
+              </span>
+            ))}
+          </div>
+
+          <p className="mt-2 text-[var(--color-muted)] text-xs leading-relaxed">
+            {data.sample_caveat.note}
+            <br />
+            数据源：
+            {data.sample_caveat.sources
+              .map(
+                (s) =>
+                  `${s.source === "em" ? "东方财富" : "同花顺"} ${s.n.toLocaleString()} 条 / ${s.insts} 家`,
+              )
+              .join("　")}
+            。<b>两源不做去重</b>——同一份研报两边标题措辞不同， 保留双份可交叉校验评级是否一致。
+          </p>
+        </div>
+      )}
 
       <div className="mb-3 flex flex-wrap items-end gap-4 border-[var(--color-border)] border-b pb-3">
         <label className="block">

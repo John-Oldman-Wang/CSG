@@ -1881,6 +1881,8 @@ def institution_curves(
                    last(close ORDER BY trade_date) AS px
             FROM index_quote GROUP BY 1, 2, 3 ORDER BY 3
             """)
+        # 必须在 with 块内取：出了块连接即关闭
+        caveat = _sample_caveat(db2)
     index_lines = []
     for (code, name), g in idx.groupby(["code", "name"]):
         g = g[g["月"].isin(months)].sort_values("月")
@@ -1907,7 +1909,7 @@ def institution_curves(
         "indexes": index_lines,
         "buy": buy,
         "exit_signal": exit_signal,
-        "sample_caveat": RESEARCH_SAMPLE_CAVEAT,
+        "sample_caveat": caveat,
         "entry_rule": (
             f"仅买{'「买入」' if buy == 'strict' else '看多（买入/增持）'}评级；"
             "发布次日开盘价买入，开盘涨停顺延，连续涨停超 5 日放弃"),
@@ -2262,24 +2264,48 @@ def institution_trades(
 
 # 研报样本的系统性缺口，随接口一并返回，供前端常驻提示。
 #
-# 数据源 ak.stock_research_report_em（东财个股研报）**不含任何头部券商**：
-# 中信 / 中金 / 华泰 / 国泰君安 / 招商 / 广发 / 海通 / 兴业 / 申万 / 东方 全部缺失。
-# 已直接调接口核对：宁德时代接口返回 469 条、库中 469 条，采集无遗漏，缺在源头。
+# **实时从库里算，不写死名单。** 2026-08-17 补进同花顺后，华泰/东方/银河/
+# 申万/光大 已到手，而前端仍在显示「样本不含任何头部券商」——
+# 硬编码的事实会随数据变化而变成谎言，且没有任何机制会提醒你它过期了。
 #
-# 推断：头部券商研究是卖给付费机构客户的产品，不授权免费渠道转发；
-# 中小券商把东财当获客渠道。即样本按「研究能否卖钱」被系统性筛选过。
-#
-# 后果：本项目所有研报结论只适用于**东财免费渠道的中小券商**。
-# 不可由此推出「券商研报无价值」——头部券商的研究我们从未观察到过。
-RESEARCH_SAMPLE_CAVEAT = {
-    "source": "东方财富个股研报（ak.stock_research_report_em）",
-    "missing": ["中信证券", "中金公司", "华泰证券", "国泰君安", "招商证券",
-                "广发证券", "海通证券", "兴业证券", "申万宏源", "东方证券"],
-    "note": ("数据源不含任何头部券商——已核对为源头缺失而非采集遗漏。"
-             "推断因其研究是付费机构客户产品，不授权免费渠道转发。"
-             "故本页结论仅适用于东财免费渠道的中小券商，"
-             "不可推广为「券商研报无价值」。"),
-}
+# 头部券商名单本身是判断，写死无妨（券商格局多年不变）；
+# 但「哪些已到手、哪些还缺」必须查库。
+TOP_BROKERS = [
+    "中信证券", "中金公司", "华泰证券", "国泰君安", "国泰海通", "招商证券",
+    "广发证券", "海通证券", "中信建投", "兴业证券", "申万宏源", "东方证券",
+    "光大证券", "中国银河",
+]
+
+
+def _sample_caveat(db) -> dict:
+    """研报样本的覆盖缺口 —— 实时计算。"""
+    have = db.query(
+        """
+        SELECT institution AS 机构, count(*) AS n,
+               count(DISTINCT code) AS 股票,
+               min(publish_date) AS 最早, max(publish_date) AS 最晚
+        FROM research_report WHERE institution IN ?
+        GROUP BY 1 ORDER BY 2 DESC
+        """, [TOP_BROKERS])
+    got = _records(have)
+    got_names = {r["机构"] for r in got}
+    missing = [b for b in TOP_BROKERS if b not in got_names]
+
+    srcs = db.query(
+        "SELECT source, count(*) n, count(DISTINCT institution) insts "
+        "FROM research_report GROUP BY 1 ORDER BY 1")
+    return {
+        "sources": _records(srcs),
+        "top_have": got,
+        "top_missing": missing,
+        "note": (
+            f"头部券商 {len(got)}/{len(TOP_BROKERS)} 家在库。"
+            f"仍缺 {'、'.join(missing)} —— 三个免费渠道（东财 / 同花顺 / 慧博）"
+            "均无，推断因其研究是卖给付费机构客户的产品，不授权免费渠道转发。"
+            "已验证⑤：能观察到的档位差不存在（验证期各持有期 |z| ≤ 1.75），"
+            "故缺失这几家对结论的影响预计有限。"
+        ) if missing else f"头部券商 {len(got)} 家全部在库。",
+    }
 
 
 @app.get("/api/institution-options")
