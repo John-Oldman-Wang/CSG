@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -214,3 +215,95 @@ def portfolio_health(holdings: list[Holding], cash_ratio: float,
                          "约束": f"≤ {lim:.0%}", "状态": "✓" if w <= lim else "✗"})
 
     return pd.DataFrame(rows)
+
+
+# ======================================================================
+# 复核结论的读取端
+# ======================================================================
+#
+# 事故记录（2026-08-16）：`review_conclusion` 表此前**只写不读**。
+# check_add_position() 声明了 last_review_verdict 参数，却没有任何代码
+# 把库里的结论传进来——你认真填写的复核结论进了库就没有下文。
+#
+# 这类「写入端完整、读取端缺失」的断链不会报错，只表现为规则不生效：
+# 你以为加仓前置条件在拦着你，其实调用方永远传的是 None。
+
+
+def last_conclusion(db, code: str) -> dict | None:
+    """该标的最近一次复核结论。无记录返回 None。"""
+    df = db.query(
+        """
+        SELECT verdict, would_rebuy, reasoning, falsified_items,
+               next_review_date, action_taken, concluded_at
+        FROM review_conclusion
+        WHERE code = ? ORDER BY concluded_at DESC LIMIT 1
+        """, [code])
+    return None if df.empty else df.iloc[0].to_dict()
+
+
+def days_since_last_action(db, code: str, actions: tuple[str, ...] = ("add",)) -> int | None:
+    """距上次指定动作的天数，用于加仓间隔约束。无记录返回 None。"""
+    marks = ",".join("?" * len(actions))
+    df = db.query(
+        f"""SELECT max(concluded_at) AS t FROM review_conclusion
+            WHERE code = ? AND action_taken IN ({marks})""",
+        [code, *actions])
+    t = df["t"].iloc[0]
+    if t is None or pd.isna(t):
+        return None
+    return (dt.datetime.now() - pd.Timestamp(t).to_pydatetime()).days
+
+
+def check_add_position_for(db, code: str, step: float, *, cfg: dict | None = None
+                           ) -> list[Violation]:
+    """加仓检查的**接线版本** —— 自动从库中取出前置条件。
+
+    与 check_add_position() 的区别仅在于参数来源：那个是纯函数便于测试，
+    这个负责把它接到真实数据上。业务调用一律用本函数，
+    避免再次出现「参数没人传，规则静默失效」。
+    """
+    c = last_conclusion(db, code)
+    return check_add_position(
+        code,
+        last_review_verdict=c["verdict"] if c else None,
+        days_since_last_add=days_since_last_action(db, code),
+        step=step,
+        cfg=cfg,
+    )
+
+
+def stalled_reviews(db, *, cfg: dict | None = None) -> list[Violation]:
+    """连续判定「信息不足」达到上限的标的。
+
+    对应 config/position.yaml 的 `max_insufficient_reviews`——
+    该配置此前**只有配置项、没有实现**。
+
+    它防的是用「再看看」无限期回避决策：这是面对亏损标的时
+    最常见、也最容易自我合理化的逃避形式，因为每一次单独看
+    都显得谨慎克制。
+    """
+    cfg = cfg or load_config()
+    limit = cfg["exit"]["max_insufficient_reviews"]
+
+    df = db.query(
+        """
+        WITH ranked AS (
+            SELECT code, verdict,
+                   row_number() OVER (PARTITION BY code ORDER BY concluded_at DESC) AS rn
+            FROM review_conclusion
+        )
+        SELECT code, count(*) AS n
+        FROM ranked
+        WHERE rn <= ? AND verdict = 'insufficient'
+        GROUP BY code HAVING count(*) >= ?
+        """, [limit, limit])
+
+    return [
+        Violation(
+            "复核停滞", "warn",
+            f"{r['code']} 最近 {limit} 次复核均为「信息不足」。"
+            f"该补的信息若 {limit} 次仍未补上，说明它要么拿不到、"
+            f"要么你并不真的打算去拿——继续挂起等于用谨慎的外形回避决策",
+            float(r["n"]), float(limit))
+        for _, r in df.iterrows()
+    ]
