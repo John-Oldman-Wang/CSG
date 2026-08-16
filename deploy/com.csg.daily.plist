@@ -5,11 +5,26 @@
 <dict>
   <key>Label</key><string>com.csg.daily</string>
 
+  <!-- 直接调项目自己的 venv python，不经 /bin/bash。
+       仓库在 ~/Documents 下受 macOS TCC 保护，launchd 进程默认无访问权
+       （2026-08-16 首次触发即 exit 126）。走 bash 意味着必须给 /bin/bash
+       授予完全磁盘访问权限，此后**任何** bash 脚本都获得该权限；
+       走本 venv 则只需给这一个项目专属解释器授权，爆炸半径仅限本项目。
+       看门狗本就调它，一次授权覆盖两个任务。 -->
   <key>ProgramArguments</key>
   <array>
-    <string>/bin/bash</string>
-    <string>/Users/wwww/Documents/GitHub/CSG/scripts/daily_chain.sh</string>
+    <string>/Users/wwww/Documents/GitHub/CSG/.venv/bin/python</string>
+    <string>-u</string>
+    <string>-m</string>
+    <string>csg.cli</string>
+    <string>daily</string>
   </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>TQDM_DISABLE</key><string>1</string>
+    <key>PYTHONUNBUFFERED</key><string>1</string>
+  </dict>
 
   <key>WorkingDirectory</key>
   <string>/Users/wwww/Documents/GitHub/CSG</string>

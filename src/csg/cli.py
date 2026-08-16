@@ -518,3 +518,77 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+@app.command("daily")
+def daily(
+    push: Annotated[bool, typer.Option("--push/--no-push",
+                                       help="是否真实推送飞书")] = True,
+    verbose: bool = True,
+) -> None:
+    """每日链：采集 → 检测事件 → 生成复核任务 → 推送飞书。
+
+    **本命令的存在理由是绕开 macOS TCC，不只是图方便。**
+
+    原先由 launchd 调 `/bin/bash scripts/daily_chain.sh`。仓库位于
+    `~/Documents` 下，而 macOS 对 Documents/Desktop/Downloads 有隐私保护，
+    launchd 启动的进程默认无访问权 —— 2026-08-16 首次触发即 `exit 126`，
+    连脚本都读不到。
+
+    修法有两种：给 `/bin/bash` 授予完全磁盘访问权限（此后**任何** bash
+    脚本都获得该权限），或把整条链收进本命令、只给项目自己的
+    `.venv/bin/python` 授权。后者的爆炸半径就是这个项目本身，
+    且看门狗本就直接调它，一次授权覆盖两个 launchd 任务。
+
+    单步失败不中断后续：某个数据源挂掉不该让事件检测也不跑。
+    但**任一步失败即以非零码退出且不写成功时间戳**——看门狗据此判定停摆。
+    """
+    import logging as _logging
+    import time as _time
+    from pathlib import Path as _Path
+
+    from csg.events.detector import Detector
+    from csg.events.strategies import StrategyEngine
+
+    _log = _logging.getLogger(__name__)
+    _setup_logging(verbose)
+    failed: list[str] = []
+
+    def step(name: str, fn) -> None:
+        console.print(f"\n[bold]━━ {name} ━━[/bold]")
+        try:
+            fn()
+        except Exception as exc:  # noqa: BLE001 — 单步失败不应中断整条链
+            failed.append(name)
+            console.print(f"[red]{name} 失败: {exc}[/red]")
+            _log.exception("%s 失败", name)
+
+    with open_db(DB_PATH) as db:
+        ing = Ingestor(db)
+        codes = _pool_codes(db)
+        console.print(f"股票池 {len(codes)} 只")
+
+        step("采集 股票列表", lambda: ing.sync_stock_basic())
+        step("采集 财报", lambda: ing.sync_financials(codes))
+        step("采集 研报(东财)", lambda: ing.sync_research(codes, source="em"))
+        step("采集 研报(同花顺)", lambda: ing.sync_research(codes, source="ths"))
+        step("采集 行情", lambda: ing.sync_daily_quotes(codes))
+
+        step("检测事件",
+             lambda: console.print(f"新增事件 {Detector(db).run_all()} 个"))
+        step("生成复核任务",
+             lambda: console.print(
+                 f"生成任务 {len(StrategyEngine(db).process_pending_events())} 个"))
+
+    if push:
+        from csg.cli_events import notify as _notify
+        step("推送飞书", lambda: _notify(dry_run=False))
+
+    if failed:
+        console.print(f"\n[red]完成，但以下步骤失败：{', '.join(failed)}[/red]")
+        raise typer.Exit(1)
+
+    stamp = _Path("logs/last_success")
+    stamp.parent.mkdir(exist_ok=True)
+    stamp.write_text(str(int(_time.time())))
+    console.print("\n[green]每日链全部成功[/green]")

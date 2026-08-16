@@ -80,17 +80,30 @@ macOS 对 `~/Documents`、`~/Desktop`、`~/Downloads` 有 TCC 隐私保护，
 共享同一失效模式」的问题，唯一的防法是让监控依赖更少的东西——
 而 TCC 是进程级的，同一目录下做不到。
 
-### 两个修法，二选一
+### 三个修法
 
-**方案 A：授予 `/bin/bash` 完全磁盘访问权限**（快，但授权面偏大）
+**方案 A：只给项目自己的 venv python 授权**（推荐，不动目录）
+
+前提已在代码侧做好：整条链已收进 `csg daily` 命令，
+plist 直接调 `.venv/bin/python -m csg.cli daily`，**不再经过 `/bin/bash`**。
+看门狗本就调同一个解释器，故只需授权一次即可覆盖两个任务。
 
     系统设置 → 隐私与安全性 → 完全磁盘访问权限 → 「+」
-    → Command+Shift+G 输入 /bin/bash → 添加并打开开关
-    对 .venv/bin/python 重复一次（看门狗直接调它，不经 bash）
+    → Command+Shift+G → 粘贴：
+      /Users/wwww/Documents/GitHub/CSG/.venv/bin/python
+    → 添加并打开开关
 
-副作用：此后**任何** bash 脚本都获得完全磁盘访问权，包括你无意中执行的。
+授权面就是这个项目专属的解释器——它只被本项目使用，
+爆炸半径仅限本项目。**不要给 `/bin/bash` 授权**：那会让此后
+任何 bash 脚本（包括你无意中执行的）都获得完全磁盘访问权。
 
-**方案 B：把仓库移出受保护目录**（推荐，一劳永逸）
+⚠️ 重建 venv（`uv sync --reinstall` 等）会替换该二进制文件，
+TCC 授权按路径+签名记录，**重建后需重新授权**。届时症状同样是
+exit 126，按本节排查。
+
+**方案 B：授予 `/bin/bash` 完全磁盘访问权限**（不推荐，见上）
+
+**方案 C：把仓库移出受保护目录**（一劳永逸，但要动目录）
 
 ```bash
 mkdir -p ~/Projects && mv ~/Documents/GitHub/CSG ~/Projects/CSG
