@@ -1729,8 +1729,8 @@ def institution_curves(
         m["累计投入"] = m["累计笔数"] * capital
         m["累计收益率"] = m["累计盈亏"] / m["累计投入"]
 
-        use = _capital_usage(g["买入日"], g["卖出日"], capital)
-        m["累计收益率"] = m["累计盈亏"] / use["占用资金"]
+        use = _capital_usage(g["买入日"], g["卖出日"], capital, g["ret"])
+        m["累计收益率"] = m["累计盈亏"] / use["所需资金"]
 
         ret = g["ret"]
         wins = int((ret > 0).sum())
@@ -1738,18 +1738,25 @@ def institution_curves(
             "机构": inst,
             "笔数": len(g),
             "总盈亏": float(g["盈亏"].sum()),
+            # 峰值并发 × 单笔：忽略盈亏累积的粗口径，保留作对照
             "占用资金": use["占用资金"],
+            # 真正要掏的钱：亏损加大缺口、盈利填补缺口，取现金流最低点
+            "所需资金": use["所需资金"],
+            "所需资金日期": use["所需资金日期"],
             "峰值并发": use["峰值并发"],
+            "峰值日期": use["峰值日期"],
             "平均并发": use["平均并发"],
+            "中位并发": use["中位并发"],
+            "资金利用率": use["资金利用率"],
             "周转次数": use["周转次数"],
-            # 收益率以**峰值占用资金**为分母：那才是你真正要准备的钱
-            "累计收益率": float(g["盈亏"].sum() / use["占用资金"]),
+            # 收益率以**所需资金**为分母：那才是你真正掏出来的钱
+            "累计收益率": float(g["盈亏"].sum() / use["所需资金"]),
             "年数": use["年数"],
-            "累计超额率": float(g["超额盈亏"].sum() / use["占用资金"]),
+            "累计超额率": float(g["超额盈亏"].sum() / use["所需资金"]),
             "年化超额": _annualized(
-                float(g["超额盈亏"].sum() / use["占用资金"]), use["年数"]),
+                float(g["超额盈亏"].sum() / use["所需资金"]), use["年数"]),
             "同期指数收益": float(g["idx_ret"].mean()),
-            "年化收益率": _annualized(float(g["盈亏"].sum() / use["占用资金"]), use["年数"]),
+            "年化收益率": _annualized(float(g["盈亏"].sum() / use["所需资金"]), use["年数"]),
             "胜率": wins / len(g),
             "平均收益率": float(ret.mean()),
             "中位收益率": float(ret.median()),
@@ -1758,7 +1765,7 @@ def institution_curves(
             "涨停顺延笔数": int((g["deferred"] > 0).sum()),
             "提前离场笔数": int(g["提前离场"].sum()),
             "平均持有日": round(float(g["持有交易日"].mean()), 1),
-            "最大回撤": _max_drawdown(m["累计盈亏"].to_numpy(), use["占用资金"]),
+            "最大回撤": _max_drawdown(m["累计盈亏"].to_numpy(), use["所需资金"]),
             "曲线": _records(m[["月", "累计盈亏", "累计超额", "累计收益率", "累计笔数"]]),
         })
 
@@ -1777,24 +1784,29 @@ def institution_curves(
     bm["累计盈亏"] = bm["盈亏"].cumsum().round(0)
     bm["累计超额"] = bm["超额盈亏"].cumsum().round(0)
     bm["累计笔数"] = bm["笔数"].cumsum()
-    buse = _capital_usage(trades["买入日"], trades["卖出日"], capital)
-    bm["累计收益率"] = bm["累计盈亏"] / buse["占用资金"]
+    buse = _capital_usage(trades["买入日"], trades["卖出日"], capital, trades["ret"])
+    bm["累计收益率"] = bm["累计盈亏"] / buse["所需资金"]
     bret = trades["ret"]
     benchmark = {
         "机构": "全样本（每份都买）",
         "笔数": len(trades),
         "总盈亏": float(trades["盈亏"].sum()),
         "占用资金": buse["占用资金"],
+        "所需资金": buse["所需资金"],
+        "所需资金日期": buse["所需资金日期"],
         "峰值并发": buse["峰值并发"],
+        "峰值日期": buse["峰值日期"],
         "平均并发": buse["平均并发"],
+        "中位并发": buse["中位并发"],
+        "资金利用率": buse["资金利用率"],
         "周转次数": buse["周转次数"],
-        "累计收益率": float(trades["盈亏"].sum() / buse["占用资金"]),
-        "累计超额率": float(trades["超额盈亏"].sum() / buse["占用资金"]),
+        "累计收益率": float(trades["盈亏"].sum() / buse["所需资金"]),
+        "累计超额率": float(trades["超额盈亏"].sum() / buse["所需资金"]),
         "年化超额": _annualized(
-            float(trades["超额盈亏"].sum() / buse["占用资金"]), buse["年数"]),
+            float(trades["超额盈亏"].sum() / buse["所需资金"]), buse["年数"]),
         "同期指数收益": float(trades["idx_ret"].mean()),
         "年数": buse["年数"],
-        "年化收益率": _annualized(float(trades["盈亏"].sum() / buse["占用资金"]), buse["年数"]),
+        "年化收益率": _annualized(float(trades["盈亏"].sum() / buse["所需资金"]), buse["年数"]),
         "胜率": float((bret > 0).mean()),
         "平均收益率": float(bret.mean()),
         "中位收益率": float(bret.median()),
@@ -1803,7 +1815,7 @@ def institution_curves(
         "涨停顺延笔数": int((trades["deferred"] > 0).sum()),
         "提前离场笔数": int(trades["提前离场"].sum()),
         "平均持有日": round(float(trades["持有交易日"].mean()), 1),
-        "最大回撤": _max_drawdown(bm["累计盈亏"].to_numpy(), buse["占用资金"]),
+        "最大回撤": _max_drawdown(bm["累计盈亏"].to_numpy(), buse["所需资金"]),
         "曲线": _records(bm[["月", "累计盈亏", "累计超额", "累计收益率", "累计笔数"]]),
     }
 
@@ -1882,48 +1894,127 @@ def _annualized(total_return: float, years: float) -> float | None:
     return (1 + total_return) ** (1 / years) - 1
 
 
-def _capital_usage(buys, sells, capital: float) -> dict:
-    """计算这组交易真正占用了多少本金。
+def _capital_usage(buys, sells, capital: float, rets=None) -> dict:
+    """这组交易真正占用了多少本金 —— 扫描线求同时持股数。
 
-    **不能用「每笔 1 万 × 笔数」当投入。** 持有 20 个交易日后卖出，
-    那笔钱就回到手里，下一份研报用的是同一笔钱。按笔数累加会得出
-    东吴证券需要 2726 万本金的荒谬结论——实际同时在手的仓位远少于此。
+    **不能用「每笔 1 万 × 笔数」当投入。** 持有期满卖出后那笔钱就回来了，
+    下一份研报用的是同一笔钱。按笔数累加会算出东吴证券需要 2726 万本金，
+    而实际同时在手的仓位峰值只有 102 笔。
 
-    真正要准备的钱 = **同时持仓的峰值** × 单笔金额。
-    用扫描线求任一时刻的在手笔数：买入 +1，卖出 +1 天后 −1。
+    算法（扫描线 / sweep line）：
 
-    另给出平均并发与周转次数：
-      周转 = 名义累计投入 ÷ 峰值占用，即这笔钱被复用了多少轮。
+        每笔交易拆成两个事件：
+            买入日 → +1
+            卖出日 → −1
+        按日期排序后依次累加，`cur` 即该时刻的**同时持股数**。
+        全程的最大值就是「同一时间持股数量最大值」= 峰值并发。
+
+        占用资金 = 峰值并发 × 单笔金额
+                 = 你必须一直准备着的钱
+
+    **同日买卖的处理**：同一天既有卖出又有买入时，先算买入（+1 排在 −1 前）。
+    即假设当日卖出的钱**不能**立刻买下一只，取保守侧。
+    A 股 T+1 下卖出资金当日可用于买入，故真实所需资金可能略低于此估计；
+    宁可高估要准备的钱，不可低估。
+
+    三个派生量：
+      平均并发  面积法：Σ(持股数 × 持续天数) ÷ 总天数。
+                它远低于峰值就说明研报到达是阵发的，钱大部分时间闲着。
+      资金利用率 平均并发 ÷ 峰值并发。这个数低是策略收益跑输指数的主因。
+      周转次数  名义累计 ÷ 峰值占用，即这笔钱被复用了多少轮。
+
+    **`所需外部资金` 才是你真正要掏的钱。**
+    峰值并发 × 1 万仍然高估：赚到的钱可以拿去买下一只，不必再掏新的。
+    故另做一遍现金流模拟——买入扣 `capital`，卖出收回 `capital × (1+收益率)`，
+    全程现金最低点的绝对值即所需注资额。
+
+    两个数的差就是**利润的自我供给能力**：
+    区间越长、越赚钱，两者差距越大；开局阶段没有利润垫底，
+    所需资金必然接近峰值并发 × 单笔金额。
+
+    `rets` 为 None 时（调用方不关心）跳过该模拟，只返回峰值口径。
     """
     events: list[tuple[Any, int]] = []
     for b, sl in zip(buys, sells, strict=True):
         events.append((pd.Timestamp(b), 1))
-        # 卖出当日资金即回笼，视为该日收盘后释放
         events.append((pd.Timestamp(sl), -1))
+    if not events:
+        return {"峰值并发": 0, "占用资金": 0.0, "所需资金": 0.0,
+                "所需资金日期": None, "平均并发": 0.0, "中位并发": 0.0,
+                "资金利用率": 0.0, "峰值日期": None,
+                "名义累计": 0.0, "周转次数": None, "年数": 0.0}
+
+    # 同日先 +1 后 −1：-d 使 +1(-1) 排在 −1(+1) 之前
     events.sort(key=lambda e: (e[0], -e[1]))
 
     cur = peak = 0
-    # 面积法求平均并发：Σ(持仓数 × 持续天数) ÷ 总天数
+    peak_date = None
     area = 0.0
-    prev = events[0][0] if events else None
+    # 每个并发水平持续了多少天，用于求中位并发
+    hist: dict[int, int] = {}
+    prev = events[0][0]
     for t, d in events:
-        if prev is not None and t > prev:
-            area += cur * (t - prev).days
+        if t > prev:
+            days = (t - prev).days
+            area += cur * days
+            hist[cur] = hist.get(cur, 0) + days
+            prev = t
         cur += d
-        peak = max(peak, cur)
-        prev = t
-    span = (events[-1][0] - events[0][0]).days if len(events) > 1 else 1
+        if cur > peak:
+            peak, peak_date = cur, t
+
+    span = (events[-1][0] - events[0][0]).days or 1
+
+    # 中位并发：把每个水平按持续天数展开后取中位数
+    med = 0.0
+    if hist:
+        total_days = sum(hist.values())
+        acc = 0
+        for lvl in sorted(hist):
+            acc += hist[lvl]
+            if acc >= total_days / 2:
+                med = float(lvl)
+                break
 
     peak_cap = peak * capital
-    years = span / 365.25
+    avg = area / span if span else 0.0
     nominal = len(buys) * capital
+
+    # ---- 现金流模拟：真正要掏出来的钱 ----------------------------
+    need = peak_cap
+    need_date = peak_date.date().isoformat() if peak_date is not None else None
+    if rets is not None:
+        flows: list[tuple[Any, float]] = []
+        for b, sl, r in zip(buys, sells, rets, strict=True):
+            flows.append((pd.Timestamp(b), -capital))
+            flows.append((pd.Timestamp(sl), capital * (1.0 + float(r))))
+        # 同日先出后进：与并发口径一致，取保守侧
+        flows.sort(key=lambda e: (e[0], e[1]))
+        cash = 0.0
+        low = 0.0
+        low_at = None
+        for t, amt in flows:
+            cash += amt
+            if cash < low:
+                low, low_at = cash, t
+        need = -low
+        need_date = low_at.date().isoformat() if low_at is not None else None
+
     return {
+        # 你必须从口袋里掏出的钱：已实现利润可用于后续建仓，故 ≤ 峰值占用
+        "所需资金": need,
+        "所需资金日期": need_date,
+        # 「同一时间持股数量最大值」——即占用资金的来源
         "峰值并发": peak,
+        "峰值日期": peak_date.date().isoformat() if peak_date is not None else None,
         "占用资金": peak_cap,
-        "平均并发": round(area / span, 2) if span > 0 else 0.0,
+        "平均并发": round(avg, 2),
+        "中位并发": med,
+        # 资金利用率低 = 大部分时间钱闲着 = 总收益被稀释
+        "资金利用率": round(avg / peak, 3) if peak else 0.0,
         "名义累计": nominal,
-        "周转次数": round(nominal / peak_cap, 1) if peak_cap else None,
-        "年数": round(years, 1),
+        "周转次数": round(nominal / need, 1) if need else None,
+        "年数": round(span / 365.25, 1),
     }
 
 
@@ -2001,7 +2092,7 @@ def institution_trades(
         return {"institution": institution, "horizon": horizon,
                 "capital": capital, "summary": None, "trades": []}
 
-    use = _capital_usage(trades["买入日"], trades["卖出日"], capital)
+    use = _capital_usage(trades["买入日"], trades["卖出日"], capital, trades["收益率"])
     ret = trades["收益率"]
     wins = int((ret > 0).sum())
     total = float(trades["盈亏"].sum())
@@ -2015,14 +2106,19 @@ def institution_trades(
         # ⚠️ 不是 capital × 笔数。持有期满卖出后资金回笼，
         #    下一笔用的是同一笔钱；真正要准备的是**峰值同时持仓**。
         "占用资金": use["占用资金"],
+        "所需资金": use["所需资金"],
+        "所需资金日期": use["所需资金日期"],
         "峰值并发": use["峰值并发"],
+        "峰值日期": use["峰值日期"],
         "平均并发": use["平均并发"],
+        "中位并发": use["中位并发"],
+        "资金利用率": use["资金利用率"],
         "周转次数": use["周转次数"],
         "年数": use["年数"],
-        "累计收益率": total / use["占用资金"] if use["占用资金"] else None,
-        "年化收益率": _annualized(total / use["占用资金"], use["年数"])
-                      if use["占用资金"] else None,
-        "最大回撤": _max_drawdown(curve["累计"].to_numpy(), use["占用资金"]),
+        "累计收益率": total / use["所需资金"] if use["所需资金"] else None,
+        "年化收益率": _annualized(total / use["所需资金"], use["年数"])
+                      if use["所需资金"] else None,
+        "最大回撤": _max_drawdown(curve["累计"].to_numpy(), use["所需资金"]),
         "胜率": wins / len(trades),
         "盈利笔数": wins,
         "亏损笔数": len(trades) - wins,

@@ -68,7 +68,7 @@ export function InstitutionCurves({ onPick }: { onPick?: (institution: string) =
       mode === "rate"
         ? c.累计收益率 * 100
         : mode === "excess"
-          ? (c.累计超额 / inst.占用资金) * 100
+          ? (c.累计超额 / inst.所需资金) * 100
           : c.累计盈亏;
     const byMonth = new Map(inst.曲线.map((c) => [c.月, pick(c)]));
     let last: number | null = null;
@@ -301,9 +301,19 @@ export function InstitutionCurves({ onPick }: { onPick?: (institution: string) =
           基准年化 {data.benchmark.年化收益率 != null ? pct(data.benchmark.年化收益率, 2) : "—"}
           （{data.benchmark.笔数} 笔 / {data.benchmark.年数} 年）
         </Badge>
-        <Badge>
-          基准占用 {(data.benchmark.占用资金 / 10000).toFixed(0)} 万（峰值并发{" "}
-          {data.benchmark.峰值并发}，周转 {data.benchmark.周转次数} 次）
+        <Badge
+          title={`同一时间持股数量最大值，出现在 ${data.benchmark.峰值日期 ?? "—"}；平均 ${data.benchmark.平均并发} 只、中位 ${data.benchmark.中位并发} 只`}
+        >
+          同时持股峰值 {data.benchmark.峰值并发} 只
+        </Badge>
+        <Badge
+          title={`现金流最低点 ${data.benchmark.所需资金日期 ?? "—"}；粗口径峰值×1万为 ${(data.benchmark.占用资金 / 10000).toFixed(0)} 万，差额即已实现利润的自我供给`}
+        >
+          实需资金 {(data.benchmark.所需资金 / 10000).toFixed(0)} 万（周转{" "}
+          {data.benchmark.周转次数} 次）
+        </Badge>
+        <Badge title="平均并发 ÷ 峰值并发。低 = 大部分时间资金闲置 = 总收益被稀释">
+          资金利用率 {pct(data.benchmark.资金利用率, 1)}
         </Badge>
         <Badge tone={beatRatio > 0.65 ? "P2" : "warn"}>
           年化跑赢基准 {data.beat_benchmark}/{data.institutions.length}
@@ -338,7 +348,7 @@ export function InstitutionCurves({ onPick }: { onPick?: (institution: string) =
               key={i.机构}
               onClick={() => onPick(i.机构)}
               className="rounded border border-[var(--color-border)] px-2 py-0.5 text-xs hover:border-[var(--color-p2)] hover:text-[var(--color-p2)]"
-              title={`${i.笔数} 笔 / ${i.年数} 年 · 年化 ${i.年化收益率 != null ? (i.年化收益率 * 100).toFixed(2) : "—"}% · 占用 ${(i.占用资金 / 10000).toFixed(0)} 万（峰值并发 ${i.峰值并发}） · 胜率 ${(i.胜率 * 100).toFixed(1)}% · 盈亏比 ${i.盈亏比?.toFixed(2) ?? "—"} · 回撤 ${(i.最大回撤 * 100).toFixed(1)}%`}
+              title={`${i.笔数} 笔 / ${i.年数} 年 · 年化 ${i.年化收益率 != null ? (i.年化收益率 * 100).toFixed(2) : "—"}% · 实需 ${(i.所需资金 / 10000).toFixed(1)} 万（同时持股峰值 ${i.峰值并发} 只 @ ${i.峰值日期 ?? "—"}） · 胜率 ${(i.胜率 * 100).toFixed(1)}% · 盈亏比 ${i.盈亏比?.toFixed(2) ?? "—"} · 回撤 ${(i.最大回撤 * 100).toFixed(1)}%`}
             >
               {i.机构}{" "}
               <span

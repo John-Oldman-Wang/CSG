@@ -424,8 +424,13 @@ export interface InstitutionTradesResp {
     总盈亏: number;
     /** 峰值同时持仓 × 单笔金额 —— 真正要准备的本金，非「单笔 × 笔数」 */
     占用资金: number;
+    所需资金: number;
+    所需资金日期: string | null;
     峰值并发: number;
+    峰值日期: string | null;
     平均并发: number;
+    中位并发: number;
+    资金利用率: number;
     周转次数: number | null;
     年数: number;
     累计收益率: number | null;
@@ -475,11 +480,19 @@ export interface CurveInstitution {
   机构: string;
   笔数: number;
   总盈亏: number;
-  /** **峰值同时持仓 × 单笔金额** —— 你真正要准备的本金。
-   *  不是「单笔 × 笔数」：持有期结束卖出后，那笔钱回来给下一笔用。 */
+  /** 峰值同时持仓 × 单笔金额。粗口径，忽略盈亏累积，保留作对照。 */
   占用资金: number;
+  /** **真正要从口袋里掏的钱**：现金流模拟的最低点。
+   *  亏损加大缺口、已实现盈利填补缺口，故 ≤ 占用资金。 */
+  所需资金: number;
+  所需资金日期: string | null;
+  /** 同一时间持股数量的最大值 */
   峰值并发: number;
+  峰值日期: string | null;
   平均并发: number;
+  中位并发: number;
+  /** 平均并发 ÷ 峰值并发。低 = 大部分时间钱闲着 = 总收益被稀释 */
+  资金利用率: number;
   周转次数: number | null;
   年数: number;
   累计收益率: number;
