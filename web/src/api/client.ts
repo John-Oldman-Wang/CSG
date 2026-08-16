@@ -7,7 +7,6 @@ import type {
   Institution,
   InstitutionStats,
   PoolTiersResp,
-  WinRatesResp,
   PortfolioResp,
   ReportAnalysis,
   ReportFilters,
@@ -18,6 +17,7 @@ import type {
   StockOverview,
   ValidationRun,
   WatchlistEntry,
+  WinRatesResp,
 } from "@/types";
 
 const BASE = "/api";

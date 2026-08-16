@@ -55,14 +55,19 @@ const GRID_THEMES = {
 /** 评级调整方向。
  *  down 单独高亮：绝对评级 94% 是买入、几乎无区分度，
  *  真正携带信息的是「谁改了主意」，尤其是逆着激励机制的下调。 */
-const CHANGE_META: Record<
-  RatingChange,
-  { label: string; tone: "P0" | "P1" | "P2" | "default" }
-> = {
-  down: { label: "下调", tone: "P0" },
-  up: { label: "上调", tone: "default" },
+// 配色语义分离：
+//
+//   红/绿  —— **数值语义**（A 股红涨绿跌）：胜率、收益、涨跌幅
+//   橙     —— **警示语义**：需要注意的事件
+//   蓝/灰  —— 中性信息
+//
+// 「评级下调」此前用 P0（红），与胜率徽章的红（表示"好"）语义冲突：
+// 同一张表里两种红分别代表好与坏，必然误读。故改用 warn（橙）。
+const CHANGE_META: Record<RatingChange, { label: string; tone: "warn" | "P2" | "default" }> = {
+  down: { label: "下调", tone: "warn" }, // 警示，非"利空数值"
+  up: { label: "上调", tone: "default" }, // 已验证无信息量，不着色
   unchanged: { label: "维持", tone: "default" },
-  first: { label: "首次", tone: "P2" },
+  first: { label: "首次", tone: "P2" }, // 中性信息
 };
 
 const PAGE_SIZE = 50;

@@ -343,9 +343,15 @@ export interface PortfolioResp {
 
 export interface WinRateRow {
   机构: string;
-  n1: number; n2: number; n3: number;      // 近1/2/3年样本数
-  w1: number | null; w2: number | null; w3: number | null;  // 胜率
-  e1: number | null; e2: number | null; e3: number | null;  // 超额收益中位
+  n1: number;
+  n2: number;
+  n3: number; // 近1/2/3年样本数
+  w1: number | null;
+  w2: number | null;
+  w3: number | null; // 胜率
+  e1: number | null;
+  e2: number | null;
+  e3: number | null; // 超额收益中位
 }
 
 export interface WinRatesResp {

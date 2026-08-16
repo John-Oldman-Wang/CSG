@@ -25,6 +25,20 @@ export function CardTitle({ children, extra }: { children: ReactNode; extra?: Re
   );
 }
 
+/**
+ * 配色语义（全站统一，不可混用）：
+ *
+ *   红 --color-up    **数值语义**：高于基准、上涨、胜率过半
+ *   绿 --color-down  **数值语义**：低于基准、下跌、胜率不足半数
+ *   橙 --color-p1    **警示语义**：需要注意的事件（评级下调、超时任务、约束临界）
+ *   红 --color-p0    **仅用于 P0 级别事件**：证伪命中、财报暴雷等须立即处理者
+ *   蓝 --color-p2    中性信息
+ *   灰               无信息 / 样本不足 / 已失效
+ *
+ * ⚠️ 红色有两个来源（up 与 p0），语义不同。
+ *    在同时展示数值与事件的表格中，事件一律用橙（warn），
+ *    把红色让给数值——否则同一张表里两种红分别代表好与坏，必然误读。
+ */
 const severityStyle: Record<string, string> = {
   P0: "bg-[var(--color-p0)]/15 text-[var(--color-p0)] border-[var(--color-p0)]/40",
   P1: "bg-[var(--color-p1)]/15 text-[var(--color-p1)] border-[var(--color-p1)]/40",
