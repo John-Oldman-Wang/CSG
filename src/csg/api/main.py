@@ -19,6 +19,7 @@ import json
 from contextlib import contextmanager
 from typing import Annotated, Any
 
+import pandas as pd
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -867,5 +868,120 @@ def institution_stats(
                 "已排除窗口未走完的研报。"
                 "⚠️ 机构排名的跨期秩相关实测为 −0.286（比随机更差），"
                 "本表仅供查看历史分布，不可用作未来的机构权重。"
+            ),
+        }
+
+
+# ----------------------------------------------------------------------
+# 估值筛选
+# ----------------------------------------------------------------------
+
+@app.get("/api/valuation-screen")
+def valuation_screen(
+    theme: Annotated[str | None, Query(description="new_energy / ai_compute")] = None,
+    max_pe: Annotated[float, Query(description="PE 上限")] = 40.0,
+    min_pe: Annotated[float, Query(description="PE 下限，滤掉亏损与异常")] = 5.0,
+    max_pe_pct: Annotated[float, Query(ge=0, le=1, description="PE 历史分位上限")] = 0.5,
+    min_roe: Annotated[float, Query(description="ROE 下限")] = 0.08,
+    min_cfo_ni: Annotated[float, Query(description="经营现金流/净利润下限")] = 0.5,
+    max_flag_score: Annotated[int, Query(description="红旗分值上限")] = 3,
+    require_growth: Annotated[bool, Query(description="要求净利润同比为正")] = True,
+    limit: int = 50,
+) -> dict:
+    """估值筛选：找「相对自身历史偏低」且基本面未恶化的标的。
+
+    **不是简单的低 PE 排序。** 低 PE 在周期行业里常是陷阱——
+    盈利顶部时 PE 最低，而那正是盈利即将下行的时点
+    （天齐锂业 2022 年净利 241 亿、PE 极低，随后跌至亏损 79 亿）。
+
+    故采用四层交叉：
+
+    1. **PE 历史分位** —— 与自身过去比，而非与其他公司比。
+       不同商业模式的合理 PE 天然不同，跨公司比 PE 意义有限。
+    2. **盈利质量** —— ROE 与经营现金流/净利润。
+       低 PE + 现金流差 = 利润可能是账面数字。
+    3. **红旗过滤** —— 排除财务异常者。
+       便宜往往有便宜的理由。
+    4. **增长要求** —— 净利润同比为正，避免买在盈利崩塌的途中。
+
+    ⚠️ 本接口输出的是**候选名单**，不是买入建议。
+    它只回答「哪些标的值得看一眼」，不回答「哪些该买」。
+    """
+    with read_db() as db:
+        pool_codes: list[str] | None = None
+        if theme:
+            pool = universe.resolve_universe(db)
+            pool_codes = pool.loc[pool["theme"] == theme, "code"].tolist()
+            if not pool_codes:
+                return {"total": 0, "items": [], "note": f"主题 {theme} 无标的"}
+
+        today = dt.date.today()
+        panel = metrics.load_pit_panel(db, today, codes=pool_codes, periods=12)
+        if panel.empty:
+            return {"total": 0, "items": [], "note": "无财务数据"}
+
+        snap = metrics.latest_snapshot(
+            flags.evaluate(metrics.compute_ratios(panel)))
+
+        # PE 历史分位：与自身过去 3 年比较
+        codes = snap["code"].tolist()
+        ph = ", ".join("?" * len(codes))
+        val = db.query(
+            f"""
+            WITH recent AS (
+                SELECT code, trade_date, pe_ttm, pb
+                FROM daily_basic
+                WHERE code IN ({ph}) AND pe_ttm IS NOT NULL AND pe_ttm > 0
+                  AND trade_date >= current_date - 1095
+            ),
+            latest AS (
+                SELECT code, pe_ttm, pb,
+                       row_number() OVER (PARTITION BY code ORDER BY trade_date DESC) rn
+                FROM recent
+            )
+            SELECT r.code,
+                   max(CASE WHEN l.rn = 1 THEN l.pe_ttm END) AS pe_ttm,
+                   max(CASE WHEN l.rn = 1 THEN l.pb END)     AS pb,
+                   -- 当前 PE 在自身近三年分布中的位置
+                   avg(CASE WHEN r.pe_ttm <=
+                        (SELECT pe_ttm FROM latest x WHERE x.code = r.code AND x.rn = 1)
+                       THEN 1.0 ELSE 0.0 END) AS pe_percentile,
+                   count(*) AS obs
+            FROM recent r JOIN latest l ON l.code = r.code
+            GROUP BY r.code HAVING count(*) >= 250
+            """, codes)
+
+        merged = snap.merge(val, on="code", how="inner")
+        names = db.query(
+            f"SELECT b.code, b.name, i.industry_name FROM stock_basic b "
+            f"LEFT JOIN industry_member i ON i.code=b.code AND i.taxonomy='em_industry' "
+            f"WHERE b.code IN ({ph})", codes)
+        merged = merged.merge(names, on="code", how="left")
+
+        m = merged
+        cond = (
+            (m["pe_ttm"].between(min_pe, max_pe))
+            & (m["pe_percentile"] <= max_pe_pct)
+            & (pd.to_numeric(m["roe_ttm"], errors="coerce") >= min_roe)
+            & (pd.to_numeric(m["cfo_to_ni"], errors="coerce") >= min_cfo_ni)
+            & (m["flag_score"] <= max_flag_score)
+        )
+        if require_growth:
+            cond &= pd.to_numeric(m["profit_yoy"], errors="coerce") > 0
+
+        out = m[cond.fillna(False)].copy()
+        out = out.sort_values("pe_percentile").head(limit)
+
+        cols = ["code", "name", "industry_name", "report_period", "pe_ttm", "pb",
+                "pe_percentile", "roe_ttm", "gross_margin_ttm", "cfo_to_ni",
+                "revenue_yoy", "profit_yoy", "debt_ratio", "flag_score", "flag_names"]
+        return {
+            "total": len(out),
+            "screened_from": len(merged),
+            "items": _records(out[[c for c in cols if c in out.columns]]),
+            "note": (
+                "PE 分位为与自身近三年比较（非跨公司比较）。"
+                "⚠️ 低 PE 在周期行业常是陷阱：盈利顶部时 PE 最低，"
+                "而那正是盈利即将下行之时。本表是候选名单，不是买入建议。"
             ),
         }

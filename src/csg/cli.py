@@ -22,6 +22,7 @@ warnings.filterwarnings("ignore")
 from csg import universe
 from csg.analysis import flags, metrics
 from csg.cli_events import events_app
+from csg.cli_watchlist import watch_app
 from csg.pipeline import Ingestor
 from csg.storage import open_db
 
@@ -29,6 +30,7 @@ app = typer.Typer(help="CSG 个人 A 股投研系统", no_args_is_help=True)
 sync_app = typer.Typer(help="数据采集（幂等，可中断续传）", no_args_is_help=True)
 app.add_typer(sync_app, name="sync")
 app.add_typer(events_app, name="ev")
+app.add_typer(watch_app, name="watch")
 
 console = Console()
 DB_PATH = "data/csg.duckdb"

@@ -185,6 +185,85 @@ class FeishuNotifier:
             },
         })
 
+    def send_disclosure_card(
+        self,
+        channel: Channel,
+        *,
+        code: str,
+        name: str,
+        report_period: str,
+        metrics_rows: list[tuple[str, str]],
+        checks: list[tuple[str, str, str]],
+        flags_hit: str = "",
+        task_id: str = "",
+    ) -> tuple[bool, str]:
+        """财报披露卡片：关键指标 + 证伪条件自动核对结果。
+
+        **核对结果分三态**，颜色与图标区分：
+            ⚠️ 已触发   数据判定该条件成立
+            ✅ 未触发   数据判定不成立
+            ❓ 需人工   数据不足以判定 —— **绝不猜测**
+
+        第三态必须显眼。猜一个看似合理的结论，比诚实说「我不知道」
+        危险得多：前者会让人误以为系统已核对过，从而跳过真正需要
+        人看的部分。
+        """
+        webhook, secret = self._channel(channel)
+        if not webhook:
+            return False, f"通道 {channel} 未配置"
+
+        icon = {"triggered": "⚠️", "not_triggered": "✅", "needs_human": "❓"}
+        metric_text = "\n".join(f"**{k}**：{v}" for k, v in metrics_rows)
+        check_text = "\n".join(
+            f"{icon.get(st, '·')} {cond}\n　　*{ev}*" for cond, st, ev in checks)
+
+        n_trig = sum(1 for _, st, _ in checks if st == "triggered")
+        n_human = sum(1 for _, st, _ in checks if st == "needs_human")
+
+        elements: list[dict[str, Any]] = [
+            {"tag": "div", "text": {"tag": "lark_md",
+                                    "content": f"**{code} {name}** · {report_period} 财报"}},
+            {"tag": "hr"},
+            {"tag": "div", "text": {"tag": "lark_md",
+                                    "content": f"**📊 关键指标**\n{metric_text}"}},
+            {"tag": "hr"},
+            {"tag": "div", "text": {"tag": "lark_md",
+                                    "content": f"**🔍 证伪条件核对**\n{check_text}"}},
+        ]
+
+        if flags_hit:
+            elements.append({"tag": "div", "text": {
+                "tag": "lark_md", "content": f"**⚠️ 财务红旗**：{flags_hit}"}})
+
+        elements.append({"tag": "hr"})
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content":
+            "**🤔 待你判断**\n"
+            "1. 本期数据是否削弱了核心假设？削弱到什么程度？\n"
+            "2. 以今天的价格、今天掌握的信息，我会重新买入吗？"}})
+
+        if n_human:
+            elements.append({"tag": "note", "elements": [{"tag": "plain_text",
+                "content": f"{n_human} 条需人工核对——系统不猜测无法判定的条件"}]})
+        if task_id:
+            elements.append({"tag": "note", "elements": [{"tag": "plain_text",
+                "content": f"提交结论：csg ev review {task_id} --verdict ..."}]})
+
+        # 有条件触发时用红色，否则用中性蓝——颜色本身就是信息
+        template = "red" if n_trig else "blue"
+        payload = {
+            "msg_type": "interactive",
+            "card": {
+                "config": {"wide_screen_mode": True},
+                "header": {
+                    "title": {"tag": "plain_text",
+                              "content": f"{'⚠️ ' if n_trig else ''}"
+                                         f"{name} {report_period} 财报披露"},
+                    "template": template},
+                "elements": elements,
+            },
+        }
+        return _post(webhook, secret, payload)
+
 
 def channel_for(severity: str) -> Channel:
     """严重度到通道的映射。P0 单独成群，其余合并。"""
