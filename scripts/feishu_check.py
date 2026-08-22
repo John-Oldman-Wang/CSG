@@ -35,7 +35,7 @@ def load_feishu_config(path: Path) -> dict:
         sys.exit(f"找不到 {path}，请先从 secrets.example.yaml 复制并填写")
 
     text = path.read_text(encoding="utf-8")
-    feishu = re.search(r"^feishu:\s*$(.*?)(?=^\S|\Z)", text, re.M | re.S)
+    feishu = re.search(r"^feishu:\s*$(.*?)(?=^\S|\Z)", text, re.MULTILINE | re.DOTALL)
     if not feishu:
         sys.exit("secrets.yaml 中没有 feishu: 配置段")
 

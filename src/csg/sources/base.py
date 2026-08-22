@@ -14,9 +14,12 @@ from __future__ import annotations
 
 import logging
 import random
+import signal
 import socket
+import threading
 import time
 from collections.abc import Callable, Sequence
+from contextlib import contextmanager
 
 import pandas as pd
 
@@ -217,3 +220,41 @@ def first_success(
             log.warning("数据源 %s 不可用: %s", name, exc)
 
     raise RuntimeError("所有候选数据源均失败 -> " + "; ".join(errors))
+
+
+@contextmanager
+def hard_timeout(seconds: float, what: str = "调用"):
+    """SIGALRM 硬超时 —— **单次调用不得无限期占用整条采集链**。
+
+    事故（2026-08-18 → 08-22）：每日链在抓行情时卡在单只股票上
+    **3 天 16 小时、86% CPU 空转**，全程持有 DuckDB 写锁，
+    前端返回 503 四天。launchd 因已有实例运行而不再启动新实例，
+    等于四天完全没有采集。
+
+    为什么循环层的时间预算救不了：预算检查在**每只股票开始前**，
+    单只内部卡死就永远轮不到下一次检查。**必须在调用层设硬上限。**
+
+    为什么不用 requests 的 timeout：那次卡死发生在切到 baostock 之后，
+    baostock 用裸 socket 自己实现收包循环，requests 的超时管不到它；
+    而 `socket.setdefaulttimeout` 也拦不住已建立连接上的自旋。
+
+    signal.alarm 的适用边界（必须知道）：
+      - 只在**主线程**有效，非主线程直接放行不设限
+      - 信号在字节码之间递送，故能打断纯 Python 自旋；
+        若卡在不释放 GIL 的 C 扩展里，要等它返回才生效
+      - 与其他 SIGALRM 使用者互斥，故用后恢复原 handler
+    """
+    if seconds <= 0 or threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    def _on_alarm(signum, frame):
+        raise TimeoutError(f"{what} 超过 {seconds:.0f}s 硬超时")
+
+    prev = signal.signal(signal.SIGALRM, _on_alarm)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, prev)

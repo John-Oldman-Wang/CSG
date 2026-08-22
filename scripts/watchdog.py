@@ -49,7 +49,9 @@ def main() -> int:
                f"否则检查：launchctl list | grep csg")
         age_h = None
     else:
-        last = dt.datetime.fromtimestamp(int(STATE.read_text().strip()))
+        # 本地时区即可：只用于计算「距上次成功多久」，不跨时区比较
+        last = dt.datetime.fromtimestamp(  # noqa: DTZ006
+            int(STATE.read_text().strip()))
         age_h = (now - last).total_seconds() / 3600
         if age_h < STALE_HOURS:
             print(f"[OK] 每日链 {age_h:.1f} 小时前成功，阈值 {STALE_HOURS}h")
@@ -68,12 +70,33 @@ def main() -> int:
         msg += "\n\n未找到任何日志文件——调度可能从未触发。"
 
     print(f"[ALERT] {msg}")
-    ok, detail = FeishuNotifier().send_text("P1", f"🔴 CSG 采集链停摆\n\n{msg}")
+    ok, detail = FeishuNotifier().send_text("p1", f"🔴 CSG 采集链停摆\n\n{msg}")
     if not ok:
         # 告警通道本身失效是最坏情况：此时连「系统死了」都传不出去。
-        # 非零退出码让 launchd 记录到 stderr 日志，留最后一条线索。
+        #
+        # 事故（2026-08-19 ~ 08-22）：本函数连续三天正确判定停摆
+        # （57h / 80.8h / 105h），但通道名写成了大写 "P1" 而配置里是 "p1"，
+        # 每次都只留下一行 stderr。用户最终是因为前端 503 才发现，
+        # 而不是因为收到告警。
+        #
+        # 教训不在大小写，在**我当初"测过"告警**：测试里 monkey-patch 掉了
+        # send_text，恰好绕过唯一坏掉的那一环。
+        # 端到端未跑通的告警链，等于没有告警链。
+        #
+        # 因此除 stderr 外，再落一个文件标记：它会被 `csg health`
+        # 与前端 /api/health 读到，使「告警发不出去」本身可见。
         print(f"[FATAL] 告警推送失败: {detail}", file=sys.stderr)
+        try:
+            (LOG_DIR / "ALERT_UNDELIVERED").write_text(
+                f"{now:%F %T}\n推送失败: {detail}\n\n{msg}\n", encoding="utf-8")
+        except OSError:
+            pass
         return 2
+
+    # 推送成功则清除标记
+    marker = LOG_DIR / "ALERT_UNDELIVERED"
+    if marker.exists():
+        marker.unlink(missing_ok=True)
     return 1
 
 

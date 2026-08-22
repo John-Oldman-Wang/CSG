@@ -24,9 +24,14 @@ import pandas as pd
 from csg.sources import akshare_source as aks
 from csg.sources import baostock_source as bss
 from csg.sources import ths_source as ths
+from csg.sources.base import hard_timeout
 from csg.storage import Database
 
 log = logging.getLogger(__name__)
+
+# 单只股票的单次采集硬上限（秒）。超过即判失败并继续下一只——
+# 一只股票卡住不该让整条链停摆。见 sources/base.hard_timeout。
+PER_CODE_TIMEOUT = 180.0
 
 DEFAULT_START = dt.date(2016, 1, 1)
 
@@ -128,7 +133,11 @@ class Ingestor:
                 fetch_start = max(start, wm - dt.timedelta(days=1))
 
             try:
-                df = self._fetch_quote(code, fetch_start, end, source)
+                # 单只硬上限。循环顶部的时间预算救不了「单只内部卡死」——
+                # 2026-08-18 那次就卡在 000503 切到 baostock 之后，
+                # 3 天 16 小时、86% CPU 空转，全程持锁。
+                with hard_timeout(PER_CODE_TIMEOUT, f"{code} 行情"):
+                    df = self._fetch_quote(code, fetch_start, end, source)
                 if df.empty:
                     # 空返回可能是尚未上市或长期停牌，属正常
                     self.db.set_watermark("daily_quote", code,
@@ -212,7 +221,8 @@ class Ingestor:
                         continue
 
                 try:
-                    df = aks.fetch_financial(code, stmt)
+                    with hard_timeout(PER_CODE_TIMEOUT, f"{code} {stmt}"):
+                        df = aks.fetch_financial(code, stmt)
                     if df.empty:
                         self.db.set_watermark(dataset, code,
                                               last_success_date=today, status="ok")
@@ -353,7 +363,8 @@ class Ingestor:
                     continue
 
             try:
-                rep, fc = fetch(code)
+                with hard_timeout(PER_CODE_TIMEOUT, f"{code} 研报[{source}]"):
+                    rep, fc = fetch(code)
                 if rep.empty:
                     self.db.set_watermark(ds, code,
                                           last_success_date=today, status="ok")

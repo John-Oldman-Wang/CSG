@@ -18,6 +18,7 @@ import datetime as dt
 import json
 import math
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Annotated, Any
 
 import pandas as pd
@@ -131,7 +132,15 @@ def health() -> dict:
                    max(last_success_date) AS newest
             FROM sync_watermark GROUP BY dataset ORDER BY dataset
         """)
-        return {"counts": _records(counts), "watermarks": _records(watermarks)}
+        # 未投递的告警：看门狗判定停摆但推送失败时留下的标记。
+        # 「告警发不出去」这件事本身必须可见，否则整条监控链等于不存在。
+        undelivered = None
+        marker = Path("logs/ALERT_UNDELIVERED")
+        if marker.exists():
+            undelivered = marker.read_text(encoding="utf-8", errors="replace")[:800]
+
+        return {"counts": _records(counts), "watermarks": _records(watermarks),
+                "alert_undelivered": undelivered}
 
 
 @app.get("/api/pool")
