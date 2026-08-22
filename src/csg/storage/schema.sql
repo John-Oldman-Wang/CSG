@@ -318,3 +318,44 @@ CREATE TABLE IF NOT EXISTS manual_report (
     my_note        VARCHAR,               -- 你自己的看法，与研报观点分开存
     entered_at     TIMESTAMP DEFAULT current_timestamp
 );
+
+-- 决策日志 —— 纪律机制的核心。
+--
+-- **规则本身不产生纪律，被记录的破戒才产生纪律。**
+--
+-- config/position.yaml 定了约束，decision/constraints.py 能检查，
+-- 但此前二者只在你主动运行命令时说话，且无视之后毫无痕迹。
+-- 于是「我定了单票 15% 上限」与「我持有 26.8% 的亿纬锂能」
+-- 可以长期共存而不产生任何摩擦。
+--
+-- 本表记录每一次买卖决定，连同**当时**的约束违规清单一起存下来。
+-- 关键字段是 overridden：你是否明知违规仍然执行。
+-- 单次无视无所谓（这是你的钱），但复盘时能算出
+-- 「破戒 N 次、其中 M 次亏钱」——那个数字才有说服力。
+--
+-- ⚠️ 系统没有下单权限，也不该有。本表是**你自己记的账**，
+-- 不是自动捕获的成交记录。它的价值完全取决于你诚实填写，
+-- 尤其是 reason=emotional 那一类。
+CREATE TABLE IF NOT EXISTS decision_log (
+    decision_id   VARCHAR PRIMARY KEY,
+    decided_at    TIMESTAMP DEFAULT current_timestamp,
+    code          VARCHAR NOT NULL,
+    action        VARCHAR NOT NULL,   -- buy / add / reduce / exit
+    shares        BIGINT,
+    price         DOUBLE,
+    -- 决策当时的组合状态快照。事后组合会变，
+    -- 不留快照就无法还原「当时该不该做这个决定」
+    weight_before DOUBLE,
+    weight_after  DOUBLE,
+    -- 卖出理由必须归类（见 position.yaml exit.reasons）。
+    -- emotional 是最有价值的一类：诚实填写它，复盘才有意义
+    reason        VARCHAR NOT NULL,
+    rationale     VARCHAR NOT NULL,   -- 文字理由，必填
+    -- 当时的约束违规清单（JSON）。为空表示合规
+    violations    VARCHAR,
+    -- **是否明知违规仍然执行。** 这是全表最重要的一列
+    overridden    BOOLEAN NOT NULL DEFAULT FALSE,
+    -- 复盘用：这笔决定之后 N 日的表现，由 csg decide review 回填
+    ret_20        DOUBLE,
+    ret_60        DOUBLE
+);

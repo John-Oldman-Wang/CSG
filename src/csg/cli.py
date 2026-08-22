@@ -21,6 +21,7 @@ warnings.filterwarnings("ignore")
 
 from csg import universe
 from csg.analysis import flags, metrics
+from csg.cli_decide import decide_app
 from csg.cli_events import events_app
 from csg.cli_watchlist import watch_app
 from csg.pipeline import Ingestor
@@ -31,6 +32,7 @@ sync_app = typer.Typer(help="数据采集（幂等，可中断续传）", no_arg
 app.add_typer(sync_app, name="sync")
 app.add_typer(events_app, name="ev")
 app.add_typer(watch_app, name="watch")
+app.add_typer(decide_app, name="decide")
 
 console = Console()
 DB_PATH = "data/csg.duckdb"
@@ -518,6 +520,60 @@ def main() -> None:
 
 
 
+def _discipline_push(push: bool) -> None:
+    """把当前的约束违规推到飞书（P1）。
+
+    只在**有违规时**推送：无违规不发消息，否则每天一条「一切正常」
+    会训练你忽略这个通道，等真出事时你也不会看。
+    """
+    from csg.decision import constraints as C
+    from csg.notify import FeishuNotifier
+
+    with open_db(DB_PATH) as db:
+        pos = db.query("SELECT p.code, p.shares, b.name FROM position p "
+                       "LEFT JOIN stock_basic b ON b.code = p.code")
+        if pos.empty:
+            console.print("无持仓，跳过")
+            return
+        px = {}
+        for c in pos["code"]:
+            r = db.query("SELECT close FROM daily_quote WHERE code = ? "
+                         "ORDER BY trade_date DESC LIMIT 1", [c])
+            px[c] = float(r["close"].iloc[0]) if not r.empty else 0.0
+        total = sum(float(r["shares"]) * px[r["code"]] for _, r in pos.iterrows())
+        if total <= 0:
+            console.print("市值为零，跳过")
+            return
+
+        cfg = C.load_config()
+        limit = cfg["single_position"]["max_weight"]
+        lines: list[str] = []
+        for _, r in pos.iterrows():
+            w = float(r["shares"]) * px[r["code"]] / total
+            if w > limit:
+                lines.append(f"• {r['code']} {r['name'] or ''} 权重 {w:.1%}"
+                             f"（上限 {limit:.0%}，需减约 "
+                             f"{(w - limit) * total / 1e4:.2f} 万）")
+        for v in C.stalled_reviews(db):
+            lines.append(f"• [{v.rule}] {v.message}")
+
+        od = db.query("SELECT count(*) n FROM decision_log WHERE overridden")
+        n_over = int(od["n"].iloc[0] or 0)
+
+    if not lines:
+        console.print("无约束违规")
+        return
+
+    msg = ("⚠️ 组合约束违规\n\n" + "\n".join(lines)
+           + f"\n\n历史破戒 {n_over} 次"
+           + "\n\n规则见 config/position.yaml。系统无下单权限，"
+             "提示可被无视——但每次无视都应用 csg decide record 记下来。")
+    console.print(msg)
+    if push:
+        ok, detail = FeishuNotifier().send_text("p1", msg)
+        console.print("已推送" if ok else f"[red]推送失败: {detail}[/red]")
+
+
 @app.command("daily")
 def daily(
     push: Annotated[bool, typer.Option("--push/--no-push",
@@ -610,6 +666,14 @@ def daily(
         step("生成复核任务",
              lambda: console.print(
                  f"生成任务 {len(StrategyEngine(db).process_pending_events())} 个"))
+
+    # 纪律检查独立于事件推送。
+    #
+    # 事件推送是「有事才响」，而约束违规是**持续状态**——
+    # 你持有 26.8% 的亿纬锂能这件事，不会因为今天没发研报就消失。
+    # 之前它只在你主动运行命令时说话，于是「我定了 15% 上限」
+    # 与「我拿着 26.8%」长期共存而不产生任何摩擦。
+    step("纪律检查", lambda: _discipline_push(push))
 
     if push:
         from csg.cli_events import notify as _notify
