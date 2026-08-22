@@ -286,3 +286,35 @@ CREATE TABLE IF NOT EXISTS index_quote (
     pct_chg     DOUBLE,
     PRIMARY KEY (code, trade_date)
 );
+
+-- 手工录入的研报要点。
+--
+-- **为什么单独一张表，而不塞进 research_report。**
+--
+-- research_report 存的是可批量采集的**元数据**（机构/日期/评级/标题），
+-- 用途是统计与回测，字段整齐、来源统一、可全量重采。
+--
+-- 本表存的是人读完一份研报后**手工摘出来的判断材料**：目标价、
+-- 核心逻辑、风险提示。它不可能全量、不可能重采、且带主观取舍。
+-- 混在一起会让「研报总数」这类统计变得没法解释——
+-- 到底算的是采集覆盖面，还是你读过多少份？
+--
+-- 数据来源是券商 App（如中金财富）。**只录你自己读过的要点，
+-- 不存原文 PDF**：那是客户协议约定仅供本人参考的内容，
+-- 摘录判断材料自用是一回事，复制存档是另一回事。
+CREATE TABLE IF NOT EXISTS manual_report (
+    report_id      VARCHAR PRIMARY KEY,   -- md5(code|date|institution)
+    code           VARCHAR NOT NULL,
+    publish_date   DATE    NOT NULL,
+    institution    VARCHAR NOT NULL,
+    rating         VARCHAR,
+    target_price   DOUBLE,                -- 目标价，研报最直接的可证伪预测
+    eps_forecast   VARCHAR,               -- 如 "2026:2.10, 2027:2.85"
+    thesis         VARCHAR,               -- 核心逻辑（看多理由）
+    -- 风险提示：**本表最有价值的字段**。
+    -- 它是唯一由看多方自己写下的看空理由，是 AI 契约「反方论证」
+    -- 与「认知缺口」两项的天然素材，比让模型凭空生成靠谱得多。
+    risks          VARCHAR,
+    my_note        VARCHAR,               -- 你自己的看法，与研报观点分开存
+    entered_at     TIMESTAMP DEFAULT current_timestamp
+);
